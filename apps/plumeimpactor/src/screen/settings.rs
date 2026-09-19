@@ -200,16 +200,20 @@ impl SettingsScreen {
                 },
             );
 
-            content = content.push(container(scrollable(account_list)).height(Fill).style(
-                |theme: &iced::Theme| container::Style {
-                    border: iced::Border {
-                        width: 1.0,
-                        color: theme.palette().background.scale_alpha(0.5),
-                        radius: appearance::THEME_CORNER_RADIUS.into(),
-                    },
-                    ..Default::default()
-                },
-            ));
+            // Fixed height instead of Fill so the whole page can scroll without
+            // nesting two flexible scroll areas.
+            content = content.push(
+                container(scrollable(account_list))
+                    .height(iced::Length::Fixed(120.0))
+                    .style(|theme: &iced::Theme| container::Style {
+                        border: iced::Border {
+                            width: 1.0,
+                            color: theme.palette().background.scale_alpha(0.5),
+                            radius: appearance::THEME_CORNER_RADIUS.into(),
+                        },
+                        ..Default::default()
+                    }),
+            );
         } else {
             content = content.push(text(t!("settings_no_accounts_yet")));
         }
@@ -221,7 +225,10 @@ impl SettingsScreen {
         content = content.push(self.view_account_buttons(selected_index));
         content = content.push(self.view_diagnostics());
 
-        content.into()
+        // The window has a fixed size and this page keeps growing (accounts,
+        // language, renewal options, self-check report), so it scrolls as a
+        // whole to keep every control reachable.
+        scrollable(content).into()
     }
 
     /// Small helpers for when something goes wrong on the user's PC: the log
@@ -268,7 +275,7 @@ impl SettingsScreen {
         if let Some(report) = &self.report {
             content = content.push(
                 container(scrollable(text(report.to_string()).size(appearance::THEME_FONT_SIZE)))
-                    .height(iced::Length::Fixed(220.0))
+                    .height(iced::Length::Fixed(180.0))
                     .style(|theme: &iced::Theme| container::Style {
                         border: iced::Border {
                             width: 1.0,
