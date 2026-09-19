@@ -81,63 +81,8 @@ pub fn get_data_path() -> PathBuf {
 /// on a third party anisette server being online (that is the usual reason a
 /// sign-in or renewal suddenly fails).
 pub fn ensure_anisette_libraries() {
-    #[cfg(target_arch = "x86_64")]
-    const ARCH: &str = "x86_64";
-    #[cfg(target_arch = "x86")]
-    const ARCH: &str = "x86";
-    #[cfg(target_arch = "aarch64")]
-    const ARCH: &str = "arm64-v8a";
-    #[cfg(target_arch = "arm")]
-    const ARCH: &str = "armeabi-v7a";
-
-    let destination = get_data_path().join("lib").join(ARCH);
-
-    let Some(exe_dir) = env::current_exe()
-        .ok()
-        .and_then(|path| path.parent().map(|parent| parent.to_path_buf()))
-    else {
-        return;
-    };
-
-    let sources = [
-        // Windows / Linux: libs/ next to the executable.
-        exe_dir.join("libs").join("lib").join(ARCH),
-        // macOS app bundle.
-        exe_dir
-            .join("..")
-            .join("Resources")
-            .join("libs")
-            .join("lib")
-            .join(ARCH),
-    ];
-
-    let Some(source) = sources.into_iter().find(|path| path.exists()) else {
-        log::info!("No bundled anisette libraries found; remote anisette will be used");
-        return;
-    };
-
-    if fs::create_dir_all(&destination).is_err() {
-        return;
-    }
-
-    let Ok(entries) = fs::read_dir(&source) else {
-        return;
-    };
-
-    for entry in entries.flatten() {
-        let from = entry.path();
-        if !from.is_file() {
-            continue;
-        }
-
-        let to = destination.join(entry.file_name());
-        if to.exists() {
-            continue;
-        }
-
-        match fs::copy(&from, &to) {
-            Ok(_) => log::info!("Installed anisette library {}", to.display()),
-            Err(err) => log::warn!("Failed to copy {}: {err}", from.display()),
-        }
+    let copied = plume_core::auth::install_bundled_anisette_libraries(get_data_path());
+    if copied > 0 {
+        log::info!("Installed {copied} bundled anisette library file(s)");
     }
 }

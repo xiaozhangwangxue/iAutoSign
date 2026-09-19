@@ -10,6 +10,7 @@ use single_instance::SingleInstance;
 mod appearance;
 mod certificate_reset;
 mod defaults;
+mod diagnostics;
 mod macos_app;
 mod refresh;
 mod relaunch;
@@ -28,6 +29,22 @@ fn main() -> iced::Result {
     // Make local anisette generation possible before anything touches Apple's
     // servers.
     defaults::ensure_anisette_libraries();
+
+    // Hidden helper used by the self-check: loading the bundled Apple libraries
+    // runs native code, so it is done in its own process where a failure cannot
+    // take down the user interface.
+    if std::env::args().any(|arg| arg == "--probe-anisette") {
+        match plume_core::auth::load_local_anisette(defaults::get_data_path()) {
+            Ok(()) => {
+                log::info!("anisette probe: local libraries loaded successfully");
+                std::process::exit(0);
+            }
+            Err(err) => {
+                log::warn!("anisette probe: local libraries failed: {err}");
+                std::process::exit(1);
+            }
+        }
+    }
 
     if plume_core::auth::anisette_libraries_present(defaults::get_data_path()) {
         log::info!("Bundled anisette libraries are in place (local anisette available)");
@@ -145,7 +162,18 @@ fn check_apple_drivers() {
         return;
     }
 
-    log::warn!("Apple Mobile Device Service is not reachable - drivers missing or service stopped?");
+    // Only complain about missing drivers when the service really is not
+    // installed. A service that is merely still starting up (common right after
+    // a reboot) is handled by the background retry loop, so do not scare the
+    // user with a dialog in that case.
+    if apple_service_installed() {
+        log::warn!(
+            "Apple Mobile Device Service is installed but not reachable yet; AutoSign keeps retrying in the background"
+        );
+        return;
+    }
+
+    log::warn!("Apple Mobile Device Service is not installed - device drivers are missing");
 
     rfd::MessageDialog::new()
         .set_level(rfd::MessageLevel::Warning)
@@ -159,6 +187,22 @@ fn check_apple_drivers() {
              installer with the driver option enabled, or install iTunes manually.",
         )
         .show();
+}
+
+/// True when Windows has the Apple Mobile Device service registered, even if it
+/// is currently stopped.
+#[cfg(target_os = "windows")]
+fn apple_service_installed() -> bool {
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    std::process::Command::new("sc")
+        .args(["query", "Apple Mobile Device Service"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
 }
 
 /// True when the Apple usbmuxd service answers (this is what makes an iPhone

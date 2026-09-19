@@ -32,6 +32,8 @@ pub enum Message {
     SelectLocale(Option<String>),
     SelectRefreshDays(u32),
     OpenLogFolder,
+    SelfCheck,
+    SelfCheckFinished(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,6 +71,8 @@ impl std::fmt::Display for LocaleChoice {
 pub struct SettingsScreen {
     teams: HashMap<String, Vec<Team>>,
     loading_teams: Option<String>,
+    checking: bool,
+    report: Option<String>,
 }
 
 impl SettingsScreen {
@@ -76,6 +80,8 @@ impl SettingsScreen {
         Self {
             teams: HashMap::new(),
             loading_teams: None,
+            checking: false,
+            report: None,
         }
     }
 
@@ -95,6 +101,16 @@ impl SettingsScreen {
             Message::SelectLocale(_) => Task::none(),
             Message::SelectRefreshDays(_) => Task::none(),
             Message::OpenLogFolder => Task::none(),
+            Message::SelfCheck => {
+                self.checking = true;
+                self.report = None;
+                Task::none()
+            }
+            Message::SelfCheckFinished(report) => {
+                self.checking = false;
+                self.report = Some(report);
+                Task::none()
+            }
             _ => Task::none(),
         }
     }
@@ -209,17 +225,45 @@ impl SettingsScreen {
     /// Small helpers for when something goes wrong on the user's PC: the log
     /// file lives next to the account data.
     fn view_diagnostics(&self) -> Element<'_, Message> {
-        row![
+        let mut content = column![row![
             button(appearance::icon_text(
                 appearance::WRENCH,
                 t!("settings_open_logs"),
                 None
             ))
             .on_press(Message::OpenLogFolder)
-            .style(appearance::s_button)
+            .style(appearance::s_button),
+            button(appearance::icon_text(
+                appearance::GEAR,
+                if self.checking {
+                    t!("settings_self_check_running")
+                } else {
+                    t!("settings_self_check")
+                },
+                None
+            ))
+            .on_press(Message::SelfCheck)
+            .style(appearance::s_button),
         ]
-        .spacing(appearance::THEME_PADDING)
-        .into()
+        .spacing(appearance::THEME_PADDING)]
+        .spacing(appearance::THEME_PADDING);
+
+        if let Some(report) = &self.report {
+            content = content.push(
+                container(scrollable(text(report.to_string()).size(appearance::THEME_FONT_SIZE)))
+                    .height(iced::Length::Fixed(220.0))
+                    .style(|theme: &iced::Theme| container::Style {
+                        border: iced::Border {
+                            width: 1.0,
+                            color: theme.palette().background.scale_alpha(0.5),
+                            radius: appearance::THEME_CORNER_RADIUS.into(),
+                        },
+                        ..Default::default()
+                    }),
+            );
+        }
+
+        content.into()
     }
 
     /// How many days before the profile expires an automatic renewal should run.

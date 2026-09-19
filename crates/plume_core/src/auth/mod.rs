@@ -37,6 +37,92 @@ pub fn anisette_libraries_present(configuration_path: PathBuf) -> bool {
         .all(|name| directory.join(name).exists())
 }
 
+/// Loads the bundled Apple libraries and prepares an anisette provider.
+///
+/// Loading runs native code, so this is only meant to be called from a separate
+/// process (see the `--probe-anisette` flag) where a failure cannot take down
+/// the user interface.
+pub fn load_local_anisette(configuration_path: PathBuf) -> Result<(), String> {
+    let configuration = AnisetteConfiguration::default().set_configuration_path(configuration_path);
+
+    omnisette::AnisetteHeaders::get_ssc_anisette_headers_provider(configuration)
+        .map(|_| ())
+        .map_err(|err| err.to_string())
+}
+
+/// Copies the anisette libraries that ship next to the executable (`libs/`)
+/// into the data directory, where the provider looks for them.
+///
+/// Returns how many files were copied; zero means there was nothing to do or
+/// no bundled libraries were found.
+pub fn install_bundled_anisette_libraries(data_path: PathBuf) -> usize {
+    #[cfg(target_arch = "x86_64")]
+    const ARCH: &str = "x86_64";
+    #[cfg(target_arch = "x86")]
+    const ARCH: &str = "x86";
+    #[cfg(target_arch = "aarch64")]
+    const ARCH: &str = "arm64-v8a";
+    #[cfg(target_arch = "arm")]
+    const ARCH: &str = "armeabi-v7a";
+
+    let destination = data_path.join("lib").join(ARCH);
+
+    let Some(exe_dir) = std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(|parent| parent.to_path_buf()))
+    else {
+        return 0;
+    };
+
+    let sources = [
+        // Windows / Linux: `libs/` next to the executable.
+        exe_dir.join("libs").join("lib").join(ARCH),
+        // macOS app bundle.
+        exe_dir
+            .join("..")
+            .join("Resources")
+            .join("libs")
+            .join("lib")
+            .join(ARCH),
+    ];
+
+    let Some(source) = sources.into_iter().find(|path| path.exists()) else {
+        log::info!("No bundled anisette libraries found; a remote server will be used instead");
+        return 0;
+    };
+
+    if std::fs::create_dir_all(&destination).is_err() {
+        return 0;
+    }
+
+    let Ok(entries) = std::fs::read_dir(&source) else {
+        return 0;
+    };
+
+    let mut copied = 0;
+    for entry in entries.flatten() {
+        let from = entry.path();
+        if !from.is_file() {
+            continue;
+        }
+
+        let to = destination.join(entry.file_name());
+        if to.exists() {
+            continue;
+        }
+
+        match std::fs::copy(&from, &to) {
+            Ok(_) => {
+                copied += 1;
+                log::info!("Installed anisette library {}", to.display());
+            }
+            Err(err) => log::warn!("Failed to copy {}: {err}", from.display()),
+        }
+    }
+
+    copied
+}
+
 const GSA_ENDPOINT: &str = "https://gsa.apple.com/grandslam/GsService2";
 
 #[derive(Debug, Clone)]

@@ -12,6 +12,11 @@ use commands::{Cli, Commands};
 async fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug")).init();
     let _ = rustls::crypto::ring::default_provider().install_default();
+
+    // Keep the command line tool in sync with the GUI: the same account data
+    // directory and the same bundled anisette libraries.
+    plume_core::auth::install_bundled_anisette_libraries(get_data_path());
+
     let cli = Cli::parse();
 
     match cli.command {
@@ -33,7 +38,7 @@ pub fn get_data_path() -> PathBuf {
         })
     };
 
-    let dir = Path::new(&base).join("PlumeImpactor");
+    let dir = Path::new(&base).join("AutoSign");
 
     fs::create_dir_all(&dir).ok();
 
