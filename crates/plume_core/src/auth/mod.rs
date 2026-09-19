@@ -4,11 +4,38 @@ pub mod anisette_data;
 use omnisette::AnisetteConfiguration;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::auth::anisette_data::AnisetteData;
 use crate::{Error, client};
+
+/// Checks whether the bundled Apple Music / ADI libraries are in place.
+///
+/// This is used at start-up so the log immediately shows whether local
+/// anisette generation is available on this computer, instead of the user
+/// discovering it later when a sign-in or renewal fails.
+///
+/// Only the files are checked on purpose: loading the native Apple libraries
+/// happens when anisette data is first needed, where a failure is handled by
+/// falling back to the remote provider.
+pub fn anisette_libraries_present(configuration_path: PathBuf) -> bool {
+    #[cfg(target_arch = "x86_64")]
+    const ARCH: &str = "x86_64";
+    #[cfg(target_arch = "x86")]
+    const ARCH: &str = "x86";
+    #[cfg(target_arch = "aarch64")]
+    const ARCH: &str = "arm64-v8a";
+    #[cfg(target_arch = "arm")]
+    const ARCH: &str = "armeabi-v7a";
+
+    let directory = configuration_path.join("lib").join(ARCH);
+
+    ["libstoreservicescore.so", "libCoreADI.so"]
+        .iter()
+        .all(|name| directory.join(name).exists())
+}
 
 const GSA_ENDPOINT: &str = "https://gsa.apple.com/grandslam/GsService2";
 

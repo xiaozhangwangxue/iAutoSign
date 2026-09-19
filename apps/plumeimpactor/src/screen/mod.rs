@@ -600,6 +600,13 @@ impl Impactor {
                             }
                             screen.update(msg).map(Message::SettingsScreen)
                         }
+                        settings::Message::OpenLogFolder => {
+                            let path = crate::defaults::get_data_path();
+                            if let Err(err) = open::that(&path) {
+                                log::error!("Failed to open {}: {err}", path.display());
+                            }
+                            Task::none()
+                        }
                         _ => screen.update(msg).map(Message::SettingsScreen),
                     }
                 } else {

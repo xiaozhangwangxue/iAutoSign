@@ -31,6 +31,7 @@ pub enum Message {
     ToggleAutoStart(bool),
     SelectLocale(Option<String>),
     SelectRefreshDays(u32),
+    OpenLogFolder,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -93,6 +94,7 @@ impl SettingsScreen {
             Message::SelectTeam(_, _) => Task::none(),
             Message::SelectLocale(_) => Task::none(),
             Message::SelectRefreshDays(_) => Task::none(),
+            Message::OpenLogFolder => Task::none(),
             _ => Task::none(),
         }
     }
@@ -199,8 +201,25 @@ impl SettingsScreen {
         content = content.push(self.view_language_picker(selected_locale));
         content = content.push(self.view_refresh_days(store.refresh_days_before()));
         content = content.push(self.view_account_buttons(selected_index));
+        content = content.push(self.view_diagnostics());
 
         content.into()
+    }
+
+    /// Small helpers for when something goes wrong on the user's PC: the log
+    /// file lives next to the account data.
+    fn view_diagnostics(&self) -> Element<'_, Message> {
+        row![
+            button(appearance::icon_text(
+                appearance::WRENCH,
+                t!("settings_open_logs"),
+                None
+            ))
+            .on_press(Message::OpenLogFolder)
+            .style(appearance::s_button)
+        ]
+        .spacing(appearance::THEME_PADDING)
+        .into()
     }
 
     /// How many days before the profile expires an automatic renewal should run.

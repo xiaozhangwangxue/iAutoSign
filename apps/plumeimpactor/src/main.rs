@@ -29,6 +29,14 @@ fn main() -> iced::Result {
     // servers.
     defaults::ensure_anisette_libraries();
 
+    if plume_core::auth::anisette_libraries_present(defaults::get_data_path()) {
+        log::info!("Bundled anisette libraries are in place (local anisette available)");
+    } else {
+        log::warn!(
+            "Bundled anisette libraries are missing; a remote anisette server will be used instead"
+        );
+    }
+
     #[cfg(target_os = "windows")]
     check_apple_drivers();
 
@@ -78,7 +86,7 @@ fn main() -> iced::Result {
     // We're going to try and try running the iced_daemon with different
     // environment variables so it can run properly
     // RE: https://github.com/claration/Impactor/issues/103, https://github.com/claration/Impactor/issues/90
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     check_gpu();
 
     run_daemon()
@@ -185,7 +193,13 @@ fn try_start_apple_service() {
         .output();
 }
 
-#[cfg(target_os = "linux")]
+/// Picks a renderer that actually works on this machine.
+///
+/// iced defaults to wgpu (Direct3D 12 on Windows). On machines without a
+/// usable GPU driver - virtual machines, remote desktop sessions, very old
+/// graphics drivers - adapter creation fails and the window would stay empty,
+/// so fall back to the CPU renderer instead.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn check_gpu() {
     let instance = wgpu::Instance::default();
 
