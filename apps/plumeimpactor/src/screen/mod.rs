@@ -619,6 +619,12 @@ impl Impactor {
                             );
                             Task::batch([update, check])
                         }
+                        settings::Message::InstallDrivers => {
+                            if let Err(err) = crate::diagnostics::install_drivers_elevated() {
+                                log::error!("Failed to start the driver installer: {err}");
+                            }
+                            Task::none()
+                        }
                         _ => screen.update(msg).map(Message::SettingsScreen),
                     }
                 } else {

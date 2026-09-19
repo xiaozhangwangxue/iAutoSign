@@ -53,6 +53,7 @@ settings_refresh_days = "Auto-renew days before expiry:"
 settings_open_logs = "Open log folder"
 settings_self_check = "Run self-check"
 settings_self_check_running = "Checking..."
+settings_install_drivers = "Install / repair Apple drivers"
 
 utilities_loading = "Loading..."
 utilities_refresh_installed_apps = "Refresh Installed Apps"

@@ -128,6 +128,9 @@ Section "!${APPNAME}" SecMain
     SetOutPath "$INSTDIR"
     File "${APPEXE}"
     File "icon.ico"
+    ; Kept next to the application so the user can re-run the driver installer
+    ; from inside AutoSign if the automatic step below did not succeed.
+    File /oname=install-drivers.ps1 "deps.ps1"
     ; Bundled anisette support libraries (Apple Music Android slice). These are
     ; what allow signing to work without depending on a remote anisette server.
     SetOutPath "$INSTDIR\libs"
@@ -208,6 +211,7 @@ Section "Uninstall"
 
     Delete "$INSTDIR\${APPEXE}"
     Delete "$INSTDIR\icon.ico"
+    Delete "$INSTDIR\install-drivers.ps1"
     Delete "$INSTDIR\Uninstall.exe"
     RMDir /r "$INSTDIR\libs"
     RMDir "$INSTDIR"

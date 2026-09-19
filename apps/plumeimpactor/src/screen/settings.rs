@@ -34,6 +34,7 @@ pub enum Message {
     OpenLogFolder,
     SelfCheck,
     SelfCheckFinished(String),
+    InstallDrivers,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -111,6 +112,7 @@ impl SettingsScreen {
                 self.report = Some(report);
                 Task::none()
             }
+            Message::InstallDrivers => Task::none(),
             _ => Task::none(),
         }
     }
@@ -225,7 +227,7 @@ impl SettingsScreen {
     /// Small helpers for when something goes wrong on the user's PC: the log
     /// file lives next to the account data.
     fn view_diagnostics(&self) -> Element<'_, Message> {
-        let mut content = column![row![
+        let mut buttons = row![
             button(appearance::icon_text(
                 appearance::WRENCH,
                 t!("settings_open_logs"),
@@ -245,8 +247,23 @@ impl SettingsScreen {
             .on_press(Message::SelfCheck)
             .style(appearance::s_button),
         ]
-        .spacing(appearance::THEME_PADDING)]
         .spacing(appearance::THEME_PADDING);
+
+        // Only offered where it can actually do something: on Windows, with the
+        // installer's dependency script shipped next to the application.
+        if crate::diagnostics::can_install_drivers() {
+            buttons = buttons.push(
+                button(appearance::icon_text(
+                    appearance::DOWNLOAD,
+                    t!("settings_install_drivers"),
+                    None,
+                ))
+                .on_press(Message::InstallDrivers)
+                .style(appearance::s_button),
+            );
+        }
+
+        let mut content = column![buttons].spacing(appearance::THEME_PADDING);
 
         if let Some(report) = &self.report {
             content = content.push(

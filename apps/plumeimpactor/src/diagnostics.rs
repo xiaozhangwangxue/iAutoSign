@@ -45,3 +45,60 @@ fn probe_anisette() -> String {
         Err(err) => format!("无法启动自检进程: {err}"),
     }
 }
+
+/// Path of the driver installer that ships next to the application.
+fn driver_script() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let directory = exe.parent()?;
+
+    ["install-drivers.ps1", "deps.ps1"]
+        .iter()
+        .map(|name| directory.join(name))
+        .find(|path| path.exists())
+}
+
+/// True when this build can install the Apple drivers on demand.
+pub fn can_install_drivers() -> bool {
+    cfg!(target_os = "windows") && driver_script().is_some()
+}
+
+/// Re-runs the bundled driver installer with administrator rights.
+///
+/// Used when the drivers were missing or failed to install during setup: the
+/// user can repair it from inside the application instead of re-running the
+/// whole installer.
+#[cfg(target_os = "windows")]
+pub fn install_drivers_elevated() -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    let script = driver_script().ok_or("deps.ps1 未找到（请重新运行安装包）")?;
+    let log_path = std::env::temp_dir().join("autosign-deps.log");
+
+    let inner = format!(
+        "-NoProfile -ExecutionPolicy Bypass -File \"{}\" -LogPath \"{}\"",
+        script.display(),
+        log_path.display()
+    );
+
+    let command = format!(
+        "Start-Process -FilePath 'powershell.exe' -ArgumentList '{}' -Verb RunAs",
+        inner.replace('\'', "''")
+    );
+
+    log::info!("Requesting elevated driver installation: {inner}");
+
+    std::process::Command::new("powershell")
+        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"])
+        .arg(command)
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+        .map(|_| ())
+        .map_err(|err| format!("无法启动驱动安装程序: {err}"))
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn install_drivers_elevated() -> Result<(), String> {
+    Err("驱动安装仅在 Windows 上可用".to_string())
+}
