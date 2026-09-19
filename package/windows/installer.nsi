@@ -131,6 +131,7 @@ Section "!${APPNAME}" SecMain
     ; Kept next to the application so the user can re-run the driver installer
     ; from inside AutoSign if the automatic step below did not succeed.
     File /oname=install-drivers.ps1 "deps.ps1"
+    File "collect-logs.ps1"
     ; Bundled anisette support libraries (Apple Music Android slice). These are
     ; what allow signing to work without depending on a remote anisette server.
     SetOutPath "$INSTDIR\libs"
@@ -139,6 +140,7 @@ Section "!${APPNAME}" SecMain
 
     CreateDirectory "$SMPROGRAMS\${APPNAME_CN}"
     CreateShortcut "$SMPROGRAMS\${APPNAME_CN}\${APPNAME_CN}.lnk" "$INSTDIR\${APPEXE}" "" "$INSTDIR\icon.ico"
+    CreateShortcut "$SMPROGRAMS\${APPNAME_CN}\收集诊断日志.lnk" "powershell.exe" '-NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\collect-logs.ps1"' "$INSTDIR\icon.ico"
     CreateShortcut "$DESKTOP\${APPNAME_CN}.lnk" "$INSTDIR\${APPEXE}" "" "$INSTDIR\icon.ico"
 
     WriteUninstaller "$INSTDIR\Uninstall.exe"
@@ -204,6 +206,7 @@ Section "Uninstall"
 
     Delete "$DESKTOP\${APPNAME_CN}.lnk"
     Delete "$SMPROGRAMS\${APPNAME_CN}\${APPNAME_CN}.lnk"
+    Delete "$SMPROGRAMS\${APPNAME_CN}\收集诊断日志.lnk"
     RMDir "$SMPROGRAMS\${APPNAME_CN}"
 
     DeleteRegValue HKCU "${RUN_KEY}" "${RUN_VALUE}"
@@ -212,6 +215,7 @@ Section "Uninstall"
     Delete "$INSTDIR\${APPEXE}"
     Delete "$INSTDIR\icon.ico"
     Delete "$INSTDIR\install-drivers.ps1"
+    Delete "$INSTDIR\collect-logs.ps1"
     Delete "$INSTDIR\Uninstall.exe"
     RMDir /r "$INSTDIR\libs"
     RMDir "$INSTDIR"
