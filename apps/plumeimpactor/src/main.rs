@@ -140,6 +140,19 @@ fn init_logging() {
     let mut builder = builder;
     builder.filter_level(log::LevelFilter::Info);
 
+    // Rendering libraries are extremely chatty at info level; keep the log
+    // readable (and small enough to send) by only recording their problems.
+    for module in [
+        "wgpu_hal",
+        "wgpu_core",
+        "naga",
+        "iced_wgpu",
+        "iced_renderer",
+        "iced_winit",
+    ] {
+        builder.filter_module(module, log::LevelFilter::Warn);
+    }
+
     match file {
         Ok(file) => {
             builder.target(env_logger::Target::Pipe(Box::new(file)));
