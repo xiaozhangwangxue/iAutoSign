@@ -19,10 +19,12 @@ pub struct Package {
 
 impl Package {
     pub fn new(package_file: PathBuf) -> Result<Self, Error> {
-        let stage_dir = env::temp_dir().join(format!(
-            "plume_stage_{:08}",
-            Uuid::new_v4().to_string().to_uppercase()
-        ));
+        // Keep this short on purpose: the whole IPA is unpacked below it and
+        // Windows refuses paths longer than 260 characters unless they use the
+        // `\\?\` prefix. Every character saved here is available to the app
+        // bundle's own file names.
+        let id = Uuid::new_v4().simple().to_string();
+        let stage_dir = env::temp_dir().join(format!("plume_{}", &id[..8]));
         let out_package_file = stage_dir.join("stage.ipa");
 
         fs::create_dir_all(&stage_dir).ok();
@@ -165,7 +167,7 @@ impl Package {
     pub fn get_package_bundle(&self) -> Result<Bundle, Error> {
         let file = fs::File::open(&self.package_file)?;
         let mut archive = ZipArchive::new(file)?;
-        archive.extract(&self.stage_dir)?;
+        archive.extract(&Self::extraction_path(&self.stage_dir))?;
 
         let app_dir = fs::read_dir(&self.stage_payload_dir)?
             .filter_map(Result::ok)
@@ -174,6 +176,26 @@ impl Package {
             .ok_or_else(|| Error::PackageInfoPlistMissing)?;
 
         Ok(Bundle::new(app_dir)?)
+    }
+
+    /// Path used when unpacking the archive.
+    ///
+    /// iOS app bundles contain deeply nested frameworks, so the unpacked tree
+    /// can easily exceed the Windows `MAX_PATH` limit. Windows accepts longer
+    /// paths when they start with `\\?\`, which is what this adds.
+    fn extraction_path(path: &std::path::Path) -> PathBuf {
+        #[cfg(windows)]
+        {
+            if let Ok(canonical) = path.canonicalize() {
+                let text = canonical.to_string_lossy().to_string();
+                if !text.starts_with(r"\\?\") {
+                    return PathBuf::from(format!(r"\\?\{text}"));
+                }
+                return PathBuf::from(text);
+            }
+        }
+
+        path.to_path_buf()
     }
 
     pub fn get_archive_based_on_path(&self, path: &PathBuf) -> Result<PathBuf, Error> {
@@ -286,5 +308,126 @@ impl Package {
 
         let new_settings = SignerOptions::new_for_app(app);
         *settings = new_settings;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    /// Builds a minimal but valid IPA on disk.
+    fn build_test_ipa(directory: &std::path::Path) -> PathBuf {
+        let path = directory.join("Test.ipa");
+        let file = fs::File::create(&path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default();
+
+        let mut plist = plist::Dictionary::new();
+        plist.insert(
+            "CFBundleIdentifier".to_string(),
+            plist::Value::String("com.example.autosign-test".to_string()),
+        );
+        plist.insert(
+            "CFBundleExecutable".to_string(),
+            plist::Value::String("TestApp".to_string()),
+        );
+        plist.insert(
+            "CFBundleName".to_string(),
+            plist::Value::String("AutoSign Test".to_string()),
+        );
+
+        let mut plist_bytes = Vec::new();
+        plist::to_writer_xml(&mut plist_bytes, &plist).unwrap();
+
+        zip.start_file("Payload/Test.app/Info.plist", options)
+            .unwrap();
+        zip.write_all(&plist_bytes).unwrap();
+
+        zip.start_file("Payload/Test.app/TestApp", options).unwrap();
+        zip.write_all(b"not a real Mach-O").unwrap();
+
+        // A nested directory, like the frameworks a real app ships.
+        zip.add_directory("Payload/Test.app/Frameworks/", options)
+            .unwrap();
+        zip.start_file("Payload/Test.app/Frameworks/Lib.framework/Lib", options)
+            .unwrap();
+        zip.write_all(b"framework payload").unwrap();
+
+        zip.finish().unwrap();
+        path
+    }
+
+    fn temp_dir() -> PathBuf {
+        let id = Uuid::new_v4().simple().to_string();
+        let directory = env::temp_dir().join(format!("plume_test_{}", &id[..8]));
+        fs::create_dir_all(&directory).unwrap();
+        directory
+    }
+
+    #[test]
+    fn unpacks_an_ipa_into_a_usable_bundle() {
+        let directory = temp_dir();
+        let ipa = build_test_ipa(&directory);
+
+        let package = Package::new(ipa).unwrap();
+        let bundle = package.get_package_bundle().unwrap();
+
+        assert!(bundle.bundle_dir().join("Info.plist").exists());
+        assert!(bundle.bundle_dir().join("TestApp").exists());
+        assert!(
+            bundle
+                .bundle_dir()
+                .join("Frameworks/Lib.framework/Lib")
+                .exists()
+        );
+
+        assert_eq!(
+            package.get_bundle_identifier().as_deref(),
+            Some("com.example.autosign-test")
+        );
+
+        package.remove_package_stage();
+        fs::remove_dir_all(&directory).ok();
+    }
+
+    /// Windows shows "messy" archives when entries are absolute or use
+    /// backslashes; the repacked IPA must stay a normal, relative archive.
+    #[test]
+    fn repacked_ipa_uses_relative_forward_slash_paths() {
+        let directory = temp_dir();
+        let ipa = build_test_ipa(&directory);
+
+        let package = Package::new(ipa).unwrap();
+        let bundle = package.get_package_bundle().unwrap();
+        let repacked = package
+            .get_archive_based_on_path(&bundle.bundle_dir().clone())
+            .unwrap();
+
+        let file = fs::File::open(&repacked).unwrap();
+        let mut archive = ZipArchive::new(file).unwrap();
+
+        let mut names = Vec::new();
+        for index in 0..archive.len() {
+            let entry = archive.by_index(index).unwrap();
+            names.push(entry.name().to_string());
+        }
+
+        assert!(!names.is_empty());
+        for name in &names {
+            assert!(
+                !name.contains('\\'),
+                "entry uses a Windows separator: {name}"
+            );
+            assert!(!name.starts_with('/'), "entry is absolute: {name}");
+            assert!(
+                name.starts_with("Payload/"),
+                "entry is not relative to Payload: {name}"
+            );
+        }
+        assert!(names.iter().any(|n| n.ends_with("Info.plist")));
+
+        package.remove_package_stage();
+        fs::remove_dir_all(&directory).ok();
     }
 }
