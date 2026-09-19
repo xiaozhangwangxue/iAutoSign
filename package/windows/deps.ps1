@@ -116,7 +116,16 @@ if (-not (Test-AppleDriverInstalled)) {
     Start-Sleep -Seconds 5
     if (Test-AppleDriverInstalled) {
         Write-Log "Apple drivers were installed through the Microsoft Store."
-        $installed = $true
+
+        if (Test-BonjourInstalled) {
+            $installed = $true
+        } else {
+            # Bonjour is what lets Apple's service find the phone over Wi-Fi.
+            # The Store app does not always bring it along, so keep going and
+            # install iTunes (which does) below.
+            Write-Log "Bonjour is still missing; installing iTunes as well so Wi-Fi renewals work."
+            $installed = $false
+        }
     } else {
         Write-Log "The Apple Devices app did not provide the driver; trying iTunes."
     }
@@ -132,7 +141,10 @@ if (-not (Test-AppleDriverInstalled)) {
     Start-Sleep -Seconds 5
     if (Test-AppleDriverInstalled) {
         Write-Log "Apple drivers were installed through the Microsoft Store (iTunes)."
-        $installed = $true
+        $installed = Test-BonjourInstalled
+        if (-not $installed) {
+            Write-Log "Bonjour is still missing; continuing with Apple's own installer."
+        }
     } else {
         Write-Log "The Microsoft Store install did not provide the driver; continuing."
     }
@@ -185,6 +197,13 @@ if (-not $installed) {
         Write-Log "Silent installation did not work; starting Apple's installer with its normal UI."
         Write-Host "Apple 的驱动安装程序需要你手动完成，请在弹出的窗口中一路点击下一步。"
         Start-Process -FilePath $setupPath -Wait | Out-Null
+    }
+
+    if (-not (Test-AppleDriverInstalled)) {
+        # Last resort: open the Microsoft Store page so the user can install the
+        # driver with a single click.
+        Write-Log "Still missing; opening the Microsoft Store page for Apple Devices."
+        Start-Process "ms-windows-store://pdp/?productid=9NP83LWLPZ9K" -ErrorAction SilentlyContinue | Out-Null
     }
 }
 
