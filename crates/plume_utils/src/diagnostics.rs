@@ -4,6 +4,7 @@
 //! without opening a window and reused by the command line tool.
 
 use std::fmt::Write as _;
+use std::path::Path;
 use std::path::PathBuf;
 
 /// Builds the human readable report.
@@ -129,6 +130,22 @@ pub async fn run_self_check(data_path: PathBuf, anisette_load_result: Option<Str
     report
 }
 
+/// Builds the PowerShell command that re-runs a script with administrator
+/// rights, quoting the paths so that directories containing spaces (or quotes)
+/// keep working.
+pub fn powershell_elevation_command(script: &Path, log_path: &Path) -> String {
+    let inner = format!(
+        "-NoProfile -ExecutionPolicy Bypass -File \"{}\" -LogPath \"{}\"",
+        script.display(),
+        log_path.display()
+    );
+
+    format!(
+        "Start-Process -FilePath 'powershell.exe' -ArgumentList '{}' -Verb RunAs",
+        inner.replace('\'', "''")
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -175,5 +192,35 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&directory).ok();
+    }
+
+    #[test]
+    fn elevation_command_quotes_paths_with_spaces() {
+        let command = powershell_elevation_command(
+            Path::new(r"C:\Program Files\AutoSign\install-drivers.ps1"),
+            Path::new(r"C:\Users\Some User\AppData\Local\Temp\autosign-deps.log"),
+        );
+
+        assert!(command.contains("-Verb RunAs"), "{command}");
+        assert!(
+            command.contains(r#""C:\Program Files\AutoSign\install-drivers.ps1""#),
+            "{command}"
+        );
+        assert!(
+            command.contains(r#"-LogPath "C:\Users\Some User\AppData\Local\Temp\autosign-deps.log""#),
+            "{command}"
+        );
+    }
+
+    #[test]
+    fn elevation_command_escapes_single_quotes() {
+        let command = powershell_elevation_command(
+            Path::new(r"C:\Users\O'Brien\AutoSign\install-drivers.ps1"),
+            Path::new(r"C:\Temp\autosign-deps.log"),
+        );
+
+        // A lone quote would terminate the argument list early.
+        assert!(command.contains("O''Brien"), "{command}");
+        assert_eq!(command.matches("-Verb RunAs").count(), 1, "{command}");
     }
 }

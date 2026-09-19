@@ -127,6 +127,40 @@ impl RefreshDaemon {
         for (udid, refresh_device) in store.refreshes() {
             for app in &refresh_device.apps {
                 if app.scheduled_refresh <= now {
+                    // Renewals re-sign AutoSign's own copy of the app (kept in
+                    // the data directory). If that copy is gone - someone
+                    // cleaned up the folder, a disk tool removed it - there is
+                    // nothing to renew, so stop retrying and tell the user.
+                    if !app.path.exists() {
+                        let name = app.name.clone().unwrap_or_else(|| "?".to_string());
+                        log::warn!(
+                            "Stored copy of {} is missing ({}); removing it from auto-renew",
+                            name,
+                            app.path.display()
+                        );
+
+                        notify_rust::Notification::new()
+                            .summary(crate::APP_NAME)
+                            .body(&format!(
+                                "{} 的备份已不存在，已停止自动续签。请重新导入该 IPA。",
+                                name
+                            ))
+                            .show()
+                            .ok();
+
+                        let mut store_clone = store.clone();
+                        let mut updated_device = refresh_device.clone();
+                        updated_device.apps.retain(|candidate| candidate.path != app.path);
+
+                        if let Err(err) = store_clone
+                            .add_or_update_refresh_device_sync(updated_device)
+                        {
+                            log::error!("Failed to update the refresh list: {err}");
+                        }
+
+                        continue;
+                    }
+
                     // We check for active tasks here to prevent the background loop
                     // from even starting a wait if a manual refresh is already running.
                     if self.is_busy(udid) {

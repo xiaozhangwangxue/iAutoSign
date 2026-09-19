@@ -76,18 +76,9 @@ pub fn install_drivers_elevated() -> Result<(), String> {
     let script = driver_script().ok_or("deps.ps1 未找到（请重新运行安装包）")?;
     let log_path = std::env::temp_dir().join("autosign-deps.log");
 
-    let inner = format!(
-        "-NoProfile -ExecutionPolicy Bypass -File \"{}\" -LogPath \"{}\"",
-        script.display(),
-        log_path.display()
-    );
+    let command = plume_utils::diagnostics::powershell_elevation_command(&script, &log_path);
 
-    let command = format!(
-        "Start-Process -FilePath 'powershell.exe' -ArgumentList '{}' -Verb RunAs",
-        inner.replace('\'', "''")
-    );
-
-    log::info!("Requesting elevated driver installation: {inner}");
+    log::info!("Requesting elevated driver installation via: {command}");
 
     std::process::Command::new("powershell")
         .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"])
