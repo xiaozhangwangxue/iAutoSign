@@ -50,5 +50,9 @@ objc = "0.2"
 objc-foundation = "0.1"
 
 [dev-dependencies]
-tokio.workspace = true
+# `macros` gives us #[tokio::test] for the anisette integration test.
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 simplelog = "0.12"
+# The workspace declares chrono without its default features; the v3 remote
+# provider and the tests need `clock` for `Utc::now()`.
+chrono = { workspace = true, features = ["clock"] }

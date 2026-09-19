@@ -137,11 +137,21 @@ impl AnisetteHeaders {
     pub fn get_anisette_headers_provider(
         configuration: AnisetteConfiguration,
     ) -> Result<AnisetteHeadersProviderRes, AnisetteError> {
-        // TODO: handle Err because it will just go to remote anisette and not tell the user anything
-        if let Ok(ssc_anisette_headers_provider) =
-            AnisetteHeaders::get_ssc_anisette_headers_provider(configuration.clone())
-        {
-            return Ok(ssc_anisette_headers_provider);
+        // Prefer generating anisette data locally from the bundled Apple Music
+        // libraries: it keeps the machine identity stable (which is what stops
+        // Apple from asking for two-factor codes over and over) and does not
+        // depend on a third party server being online.
+        match AnisetteHeaders::get_ssc_anisette_headers_provider(configuration.clone()) {
+            Ok(provider) => {
+                log::info!("Using the local anisette provider (bundled Apple libraries)");
+                return Ok(provider);
+            }
+            Err(err) => {
+                log::warn!(
+                    "Local anisette is unavailable ({err}); falling back to the remote anisette server {}",
+                    configuration.anisette_url_v3
+                );
+            }
         }
 
         #[cfg(feature = "remote-anisette-v3")]
@@ -152,6 +162,9 @@ impl AnisetteHeaders {
                 configuration.macos_serial.clone(),
             ),
         )));
+
+        #[cfg(not(feature = "remote-anisette-v3"))]
+        Err(AnisetteError::MissingLibraries)
     }
 
     pub fn get_ssc_anisette_headers_provider(
