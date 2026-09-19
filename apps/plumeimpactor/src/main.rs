@@ -121,37 +121,68 @@ fn init_logging() {
 /// showing "no device connected".
 #[cfg(target_os = "windows")]
 fn check_apple_drivers() {
+    if usbmux_reachable() {
+        return;
+    }
+
+    // The driver service may just be stopped (for example right after a
+    // reboot); try to start it quietly before bothering the user. Starting a
+    // service needs administrator rights, so a failure here is expected and
+    // harmless.
+    try_start_apple_service();
+    std::thread::sleep(std::time::Duration::from_secs(3));
+
+    if usbmux_reachable() {
+        log::info!("Started Apple Mobile Device Service");
+        return;
+    }
+
+    log::warn!("Apple Mobile Device Service is not reachable - drivers missing or service stopped?");
+
+    rfd::MessageDialog::new()
+        .set_level(rfd::MessageLevel::Warning)
+        .set_title("AutoSign - 未检测到 Apple 手机驱动")
+        .set_description(
+            "AutoSign 无法连接 Apple 手机驱动服务（Apple Mobile Device Service），\
+             因此现在看不到 iPhone。\n\n\
+             解决方法：重新运行 AutoSign 安装程序，并保持“Apple 手机驱动与依赖”\
+             勾选；或者手动安装 iTunes / 在服务里启动 “Apple Mobile Device Service”。\n\n\
+             Apple Mobile Device Service is not reachable. Re-run the AutoSign \
+             installer with the driver option enabled, or install iTunes manually.",
+        )
+        .show();
+}
+
+/// True when the Apple usbmuxd service answers (this is what makes an iPhone
+/// visible to Windows at all).
+#[cfg(target_os = "windows")]
+fn usbmux_reachable() -> bool {
     let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
     else {
-        return;
+        return false;
     };
 
-    let reachable = runtime.block_on(async {
+    runtime.block_on(async {
         match idevice::usbmuxd::UsbmuxdConnection::default().await {
             Ok(mut connection) => connection.get_devices().await.is_ok(),
             Err(_) => false,
         }
-    });
+    })
+}
 
-    if reachable {
-        return;
-    }
+#[cfg(target_os = "windows")]
+fn try_start_apple_service() {
+    use std::os::windows::process::CommandExt;
 
-    log::warn!("Apple Mobile Device Service is not reachable - drivers missing?");
+    // CREATE_NO_WINDOW: the GUI build has no console of its own.
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-    rfd::MessageDialog::new()
-        .set_level(rfd::MessageLevel::Warning)
-        .set_title("AutoSign - 缺少 Apple 手机驱动")
-        .set_description(
-            "未检测到 Apple 手机驱动（Apple Mobile Device Service）。\n\n\
-             请重新运行 AutoSign 安装程序，保持“Apple 手机驱动与依赖”勾选；\
-             或手动安装 iTunes 后再打开 AutoSign。\n\n\
-             Apple Mobile Device Service was not found. Re-run the installer \
-             with the driver option enabled, or install iTunes manually.",
-        )
-        .show();
+    let _ = std::process::Command::new("sc")
+        .args(["start", "Apple Mobile Device Service"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
 }
 
 #[cfg(target_os = "linux")]

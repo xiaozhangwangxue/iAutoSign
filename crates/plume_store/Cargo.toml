@@ -8,7 +8,10 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-tokio.workspace = true
+# `fs` is needed by the account store itself; enabling it here means the crate
+# also compiles when it is built on its own (for example in tests) instead of
+# relying on feature unification with the GUI application.
+tokio = { workspace = true, features = ["fs"] }
 chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true

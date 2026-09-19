@@ -268,3 +268,50 @@ impl AccountStore {
         self.save_sync()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn refresh_days_defaults_to_the_constant() {
+        let store = AccountStore::default();
+        assert_eq!(store.refresh_days_before(), DEFAULT_REFRESH_DAYS_BEFORE);
+    }
+
+    #[test]
+    fn refresh_days_is_sanitised() {
+        let mut store = AccountStore::default();
+
+        store.refresh_days_before = 0;
+        assert_eq!(store.refresh_days_before(), DEFAULT_REFRESH_DAYS_BEFORE);
+
+        store.refresh_days_before = 2;
+        assert_eq!(store.refresh_days_before(), 2);
+
+        store.refresh_days_before = 99;
+        assert_eq!(store.refresh_days_before(), 6);
+    }
+
+    #[test]
+    fn older_account_files_still_load() {
+        // Files written before the auto-renew setting existed must keep working.
+        let json = r#"{"selected_account":null,"accounts":{},"refreshes":{}}"#;
+        let store: AccountStore = serde_json::from_str(json).unwrap();
+
+        assert_eq!(store.refresh_days_before(), DEFAULT_REFRESH_DAYS_BEFORE);
+        assert!(store.locale().is_none());
+        assert!(store.accounts().is_empty());
+    }
+
+    #[test]
+    fn refresh_days_survives_a_round_trip() {
+        let mut store = AccountStore::default();
+        store.refresh_days_before = 5;
+
+        let json = serde_json::to_string(&store).unwrap();
+        let restored: AccountStore = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.refresh_days_before(), 5);
+    }
+}
