@@ -1,6 +1,7 @@
 use iced::{Subscription, window};
 use idevice::usbmuxd::{UsbmuxdConnection, UsbmuxdListenEvent};
 use std::sync::Arc;
+use std::time::Duration;
 use tray_icon::{TrayIconEvent, menu::MenuEvent};
 
 use crate::{
@@ -37,35 +38,58 @@ pub(crate) fn device_listener() -> Subscription<Message> {
                             }
                         }
 
-                        let Ok(mut muxer) = UsbmuxdConnection::default().await else {
-                            return;
-                        };
+                        // When AutoSign is started automatically at boot the
+                        // Apple driver service may not be up yet, and the user
+                        // would then never see their phone. Keep retrying
+                        // instead of giving up on the device listener.
+                        loop {
+                            let mut muxer = loop {
+                                match UsbmuxdConnection::default().await {
+                                    Ok(muxer) => break muxer,
+                                    Err(err) => {
+                                        log::warn!(
+                                            "Apple's device service is not reachable yet ({err}); retrying in 5 seconds"
+                                        );
+                                        tokio::time::sleep(Duration::from_secs(5)).await;
+                                    }
+                                }
+                            };
 
-                        if let Ok(devices) = muxer.get_devices().await {
-                            for dev in devices {
-                                let device = Device::new(dev).await;
-                                prepare_wireless_refresh(device.clone());
-                                let _ = tx.unbounded_send(Message::DeviceConnected(device));
-                            }
-                        }
-
-                        let Ok(mut stream) = muxer.listen().await else {
-                            return;
-                        };
-
-                        while let Some(event) = stream.next().await {
-                            let msg = match event {
-                                Ok(UsbmuxdListenEvent::Connected(dev)) => {
+                            if let Ok(devices) = muxer.get_devices().await {
+                                for dev in devices {
                                     let device = Device::new(dev).await;
                                     prepare_wireless_refresh(device.clone());
-                                    Message::DeviceConnected(device)
+                                    let _ = tx.unbounded_send(Message::DeviceConnected(device));
                                 }
-                                Ok(UsbmuxdListenEvent::Disconnected(id)) => {
-                                    Message::DeviceDisconnected(id)
-                                }
-                                Err(_) => continue,
+                            }
+
+                            let Ok(mut stream) = muxer.listen().await else {
+                                log::warn!(
+                                    "Could not listen for devices; retrying in 5 seconds"
+                                );
+                                tokio::time::sleep(Duration::from_secs(5)).await;
+                                continue;
                             };
-                            let _ = tx.unbounded_send(msg);
+
+                            while let Some(event) = stream.next().await {
+                                let msg = match event {
+                                    Ok(UsbmuxdListenEvent::Connected(dev)) => {
+                                        let device = Device::new(dev).await;
+                                        prepare_wireless_refresh(device.clone());
+                                        Message::DeviceConnected(device)
+                                    }
+                                    Ok(UsbmuxdListenEvent::Disconnected(id)) => {
+                                        Message::DeviceDisconnected(id)
+                                    }
+                                    Err(_) => continue,
+                                };
+                                let _ = tx.unbounded_send(msg);
+                            }
+
+                            // The service restarted (for example after an iTunes
+                            // update); reconnect instead of going deaf.
+                            log::warn!("Device listener stopped; reconnecting in 5 seconds");
+                            tokio::time::sleep(Duration::from_secs(5)).await;
                         }
                     });
                 });
