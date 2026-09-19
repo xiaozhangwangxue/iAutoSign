@@ -54,7 +54,9 @@ impl ProgressScreen {
                     self.progress_rx = None;
                     self.is_installing = false;
 
-                    let error_msg = status.clone();
+                    // iOS installation errors are cryptic (0xe8008015...), so
+                    // add the matching explanation and suggested fix.
+                    let error_msg = plume_utils::errors::enrich_install_error(&status);
                     std::thread::spawn(move || {
                         rfd::MessageDialog::new()
                             .set_title(t!("progress_failed"))

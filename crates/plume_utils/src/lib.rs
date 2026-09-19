@@ -2,6 +2,7 @@ mod bundle;
 mod cgbi;
 pub mod diagnostics;
 mod device;
+pub mod errors;
 mod options;
 mod package;
 mod signer;
