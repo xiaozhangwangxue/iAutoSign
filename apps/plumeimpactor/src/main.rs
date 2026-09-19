@@ -46,6 +46,22 @@ fn main() -> iced::Result {
         }
     }
 
+    // `--self-check` runs the same report as the button in the settings screen
+    // and writes it to selfcheck.txt next to the log. Useful when the window
+    // cannot be opened at all.
+    if std::env::args().any(|arg| arg == "--self-check") {
+        let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        else {
+            std::process::exit(2);
+        };
+
+        let report = runtime.block_on(diagnostics::write_self_check_report());
+        println!("{report}");
+        std::process::exit(0);
+    }
+
     if plume_core::auth::anisette_libraries_present(defaults::get_data_path()) {
         log::info!("Bundled anisette libraries are in place (local anisette available)");
     } else {

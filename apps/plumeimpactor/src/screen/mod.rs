@@ -609,9 +609,14 @@ impl Impactor {
                         }
                         settings::Message::SelfCheck => {
                             let update = screen.update(msg).map(Message::SettingsScreen);
-                            let check = Task::perform(crate::diagnostics::run_self_check(), |report| {
-                                Message::SettingsScreen(settings::Message::SelfCheckFinished(report))
-                            });
+                            let check = Task::perform(
+                                crate::diagnostics::write_self_check_report(),
+                                |report| {
+                                    Message::SettingsScreen(settings::Message::SelfCheckFinished(
+                                        report,
+                                    ))
+                                },
+                            );
                             Task::batch([update, check])
                         }
                         _ => screen.update(msg).map(Message::SettingsScreen),

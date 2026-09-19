@@ -8,6 +8,22 @@ use std::fmt::Write as _;
 
 use crate::defaults::get_data_path;
 
+/// Runs the self-check and also stores the result as `selfcheck.txt` in the data
+/// directory, so the user can simply send that file (or find it even when the
+/// window could not be opened).
+pub async fn write_self_check_report() -> String {
+    let report = run_self_check().await;
+    let path = get_data_path().join("selfcheck.txt");
+
+    if let Err(err) = std::fs::write(&path, &report) {
+        log::warn!("Could not write {}: {err}", path.display());
+    } else {
+        log::info!("Self-check report written to {}", path.display());
+    }
+
+    report
+}
+
 pub async fn run_self_check() -> String {
     let mut report = String::new();
 
