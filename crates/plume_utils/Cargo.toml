@@ -22,3 +22,8 @@ flate2.workspace = true
 plume_core = { path = "../plume_core", features = ["tweaks"] }
 plume_store = { path = "../plume_store" }
 decompress = { path = "../../3rdparty/decompress" }
+
+[dev-dependencies]
+# Used by the signing tests to synthesise a small Mach-O file.
+apple-codesign = { path = "../../3rdparty/apple-platform-rs/apple-codesign", default-features = false }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

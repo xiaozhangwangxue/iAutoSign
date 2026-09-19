@@ -477,3 +477,113 @@ impl Signer {
         Ok(settings)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::{Path, PathBuf};
+
+    /// `CSMAGIC_EMBEDDED_SIGNATURE`, the SuperBlob every signed Mach-O carries.
+    const SIGNATURE_MAGIC: [u8; 4] = [0xfa, 0xde, 0x0c, 0xc0];
+
+    /// A tiny but structurally valid Mach-O executable.
+    fn synthetic_executable() -> Vec<u8> {
+        /// `MH_EXECUTE`
+        const MH_EXECUTE: u32 = 2;
+
+        apple_codesign::macho_builder::MachOBuilder::new_x86_64(MH_EXECUTE)
+            .write_macho()
+            .expect("synthetic Mach-O should be writable")
+    }
+
+    fn write_test_app(directory: &Path) -> PathBuf {
+        let app = directory.join("Test.app");
+        std::fs::create_dir_all(&app).unwrap();
+
+        let mut plist = plist::Dictionary::new();
+        plist.insert(
+            "CFBundleIdentifier".to_string(),
+            plist::Value::String("com.example.autosign-test".to_string()),
+        );
+        plist.insert(
+            "CFBundleExecutable".to_string(),
+            plist::Value::String("TestApp".to_string()),
+        );
+        plist.insert(
+            "CFBundleName".to_string(),
+            plist::Value::String("AutoSign Test".to_string()),
+        );
+        plist.insert(
+            "CFBundleShortVersionString".to_string(),
+            plist::Value::String("1.0".to_string()),
+        );
+        plist.insert(
+            "CFBundleVersion".to_string(),
+            plist::Value::String("1".to_string()),
+        );
+
+        let mut plist_bytes = Vec::new();
+        plist::to_writer_xml(&mut plist_bytes, &plist).unwrap();
+        std::fs::write(app.join("Info.plist"), plist_bytes).unwrap();
+
+        std::fs::write(app.join("TestApp"), synthetic_executable()).unwrap();
+
+        app
+    }
+
+    fn temp_dir() -> PathBuf {
+        let id = uuid::Uuid::new_v4().simple().to_string();
+        let directory = std::env::temp_dir().join(format!("plume_sign_{}", &id[..8]));
+        std::fs::create_dir_all(&directory).unwrap();
+        directory
+    }
+
+    /// End to end signing of a bundle: this is what actually happens to a user's
+    /// IPA before it is installed. Ad-hoc signing needs no Apple account, but
+    /// exercises exactly the same bundle walking and Mach-O rewriting code as a
+    /// real Apple ID signature.
+    #[tokio::test]
+    async fn signs_an_app_bundle() {
+        let directory = temp_dir();
+        let app = write_test_app(&directory);
+
+        // Sanity check: the input really is unsigned.
+        let unsigned = std::fs::read(app.join("TestApp")).unwrap();
+        assert!(
+            !unsigned
+                .windows(SIGNATURE_MAGIC.len())
+                .any(|w| w == SIGNATURE_MAGIC),
+            "the test executable should start out unsigned"
+        );
+
+        let bundle = Bundle::new(&app).unwrap();
+        let options = SignerOptions {
+            mode: SignerMode::Adhoc,
+            ..Default::default()
+        };
+        let signer = Signer::new(None, options);
+
+        signer
+            .sign_bundle(&bundle)
+            .await
+            .expect("signing the bundle should succeed");
+
+        // Bundle level signature resources...
+        assert!(
+            app.join("_CodeSignature").join("CodeResources").exists(),
+            "CodeResources should have been written"
+        );
+
+        // ...and a code signature embedded in the executable itself.
+        let signed = std::fs::read(app.join("TestApp")).unwrap();
+        assert!(
+            signed
+                .windows(SIGNATURE_MAGIC.len())
+                .any(|w| w == SIGNATURE_MAGIC),
+            "the executable should contain an embedded code signature"
+        );
+        assert!(signed.len() > unsigned.len());
+
+        std::fs::remove_dir_all(&directory).ok();
+    }
+}
