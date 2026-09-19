@@ -1,5 +1,6 @@
 mod bundle;
 mod cgbi;
+pub mod diagnostics;
 mod device;
 mod options;
 mod package;
