@@ -42,6 +42,9 @@ pub struct RefreshDaemon {
     store_path: std::path::PathBuf,
     connected_devices: ConnectedDevices,
     active_tasks: Arc<Mutex<HashSet<String>>>,
+    /// Devices we already switched over to wireless renewals, so the periodic
+    /// check does not repeat the lockdown handshake for them.
+    wireless_enabled: Arc<Mutex<HashSet<String>>>,
     check_interval: Duration,
 }
 
@@ -51,6 +54,7 @@ impl RefreshDaemon {
             store_path: get_data_path().join("accounts.json"),
             connected_devices: Arc::new(Mutex::new(HashMap::new())),
             active_tasks: Arc::new(Mutex::new(HashSet::new())),
+            wireless_enabled: Arc::new(Mutex::new(HashSet::new())),
             check_interval: Duration::from_secs(60 * 3), // Check every 3 minutes
         }
     }
@@ -108,6 +112,12 @@ impl RefreshDaemon {
     }
 
     async fn check_and_refresh(&self) -> Result<(), String> {
+        // Make sure every attached phone is reachable over Wi-Fi as well, so
+        // renewals also work once the cable is unplugged. This retries on every
+        // pass: the first attempt often happens before the user has tapped
+        // "Trust This Computer".
+        self.enable_wireless_renewals().await;
+
         let store = AccountStore::load(&Some(self.store_path.clone()))
             .await
             .map_err(|e| format!("Failed to load account store: {}", e))?;
@@ -167,6 +177,49 @@ impl RefreshDaemon {
         }
 
         Ok(())
+    }
+
+    async fn enable_wireless_renewals(&self) {
+        let devices: Vec<Device> = match self.connected_devices.lock() {
+            Ok(devices) => devices.values().cloned().collect(),
+            Err(_) => return,
+        };
+
+        for device in devices {
+            if device.is_network() {
+                continue;
+            }
+
+            let already_enabled = self
+                .wireless_enabled
+                .lock()
+                .map(|enabled| enabled.contains(&device.udid))
+                .unwrap_or(true);
+
+            if already_enabled {
+                continue;
+            }
+
+            match device.enable_wireless_connections().await {
+                Ok(()) => {
+                    log::info!(
+                        "Wi-Fi renewals enabled for {} ({})",
+                        device.name,
+                        device.udid
+                    );
+
+                    if let Ok(mut enabled) = self.wireless_enabled.lock() {
+                        enabled.insert(device.udid.clone());
+                    }
+                }
+                Err(err) => {
+                    log::debug!(
+                        "Could not enable Wi-Fi renewals for {} yet: {err}",
+                        device.udid
+                    );
+                }
+            }
+        }
     }
 
     fn is_busy(&self, udid: &str) -> bool {
