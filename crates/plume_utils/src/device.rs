@@ -218,6 +218,53 @@ impl Device {
         Ok(())
     }
 
+    /// True when this device is reached over the local network (Wi-Fi) rather
+    /// than over a USB cable.
+    pub fn is_network(&self) -> bool {
+        matches!(
+            self.usbmuxd_device.as_ref().map(|d| &d.connection_type),
+            Some(Connection::Network(_))
+        )
+    }
+
+    /// Ask the device to also accept lockdown connections over Wi-Fi.
+    ///
+    /// iOS only honours wireless connections for computers which have been
+    /// trusted while plugged in, so this is called right after a USB connection
+    /// is seen. Enabling it is what later allows automatic renewals while the
+    /// phone is only sitting on the same Wi-Fi network as this computer.
+    pub async fn enable_wireless_connections(&self) -> Result<(), Error> {
+        let Some(device) = &self.usbmuxd_device else {
+            return Err(Error::Other("Device is not connected via USB".to_string()));
+        };
+
+        let mut usbmuxd = UsbmuxdConnection::default().await?;
+        let pairing_file = usbmuxd.get_pair_record(&self.udid).await?;
+
+        let provider = device.to_provider(UsbmuxdAddr::default(), CONNECTION_LABEL);
+        let mut lc = LockdownClient::connect(&provider).await?;
+        lc.start_session(&pairing_file).await.ok();
+
+        lc.set_value(
+            "EnableWifiConnections",
+            true.into(),
+            Some("com.apple.mobile.wireless_lockdown"),
+        )
+        .await?;
+
+        // Wireless debugging is separate from wireless sync, but enabling both
+        // keeps the device reachable for every service we use.
+        lc.set_value(
+            "EnableWifiDebugging",
+            true.into(),
+            Some("com.apple.mobile.wireless_lockdown"),
+        )
+        .await
+        .ok();
+
+        Ok(())
+    }
+
     pub async fn install_remote_pairing_record(
         &self,
         identifier: &String,

@@ -7,7 +7,16 @@ use plume_core::Error;
 
 use crate::{GsaAccount, RefreshDevice};
 
-#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+/// How many days before a provisioning profile expires we should renew it.
+/// Free Apple IDs only allow 7 day profiles, so the default leaves a couple of
+/// days of slack in case the computer is offline for a while.
+pub const DEFAULT_REFRESH_DAYS_BEFORE: u32 = 3;
+
+fn default_refresh_days_before() -> u32 {
+    DEFAULT_REFRESH_DAYS_BEFORE
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AccountStore {
     selected_account: Option<String>,      // Email
     accounts: HashMap<String, GsaAccount>, // Email -> GsaAccount
@@ -15,8 +24,23 @@ pub struct AccountStore {
     refreshes: HashMap<String, RefreshDevice>, // UDID -> RefreshDevice (apps?)
     #[serde(default)]
     locale: Option<String>, // None = system locale
+    #[serde(default = "default_refresh_days_before")]
+    refresh_days_before: u32, // Renew this many days before expiry
     #[serde(skip)]
     path: Option<PathBuf>,
+}
+
+impl Default for AccountStore {
+    fn default() -> Self {
+        Self {
+            selected_account: None,
+            accounts: HashMap::new(),
+            refreshes: HashMap::new(),
+            locale: None,
+            refresh_days_before: DEFAULT_REFRESH_DAYS_BEFORE,
+            path: None,
+        }
+    }
 }
 
 impl AccountStore {
@@ -147,6 +171,25 @@ impl AccountStore {
     pub fn set_locale_sync(&mut self, locale: Option<String>) -> Result<(), Error> {
         self.locale = locale;
         self.save_sync()
+    }
+
+    /// Number of days before the profile expires that a renewal should happen.
+    pub fn refresh_days_before(&self) -> u32 {
+        if self.refresh_days_before == 0 {
+            DEFAULT_REFRESH_DAYS_BEFORE
+        } else {
+            self.refresh_days_before.clamp(1, 6)
+        }
+    }
+
+    pub fn set_refresh_days_before_sync(&mut self, days: u32) -> Result<(), Error> {
+        self.refresh_days_before = days.clamp(1, 6);
+        self.save_sync()
+    }
+
+    pub async fn set_refresh_days_before(&mut self, days: u32) -> Result<(), Error> {
+        self.refresh_days_before = days.clamp(1, 6);
+        self.save().await
     }
 
     pub async fn accounts_add_from_session(

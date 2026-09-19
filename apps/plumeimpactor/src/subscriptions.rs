@@ -44,6 +44,7 @@ pub(crate) fn device_listener() -> Subscription<Message> {
                         if let Ok(devices) = muxer.get_devices().await {
                             for dev in devices {
                                 let device = Device::new(dev).await;
+                                prepare_wireless_refresh(device.clone());
                                 let _ = tx.unbounded_send(Message::DeviceConnected(device));
                             }
                         }
@@ -55,7 +56,9 @@ pub(crate) fn device_listener() -> Subscription<Message> {
                         while let Some(event) = stream.next().await {
                             let msg = match event {
                                 Ok(UsbmuxdListenEvent::Connected(dev)) => {
-                                    Message::DeviceConnected(Device::new(dev).await)
+                                    let device = Device::new(dev).await;
+                                    prepare_wireless_refresh(device.clone());
+                                    Message::DeviceConnected(device)
                                 }
                                 Ok(UsbmuxdListenEvent::Disconnected(id)) => {
                                     Message::DeviceDisconnected(id)
@@ -73,6 +76,31 @@ pub(crate) fn device_listener() -> Subscription<Message> {
             },
         )
     })
+}
+
+/// Called whenever a device (re)connects.
+///
+/// Two things happen here:
+///  * the refresh daemon is woken so that apps which are due (or close to
+///    expiring) are renewed straight away, and
+///  * "sync over Wi-Fi" is enabled on the device while it is attached over USB,
+///    which is what allows us to refresh apps later on while the phone is only
+///    on the same network as this computer.
+fn prepare_wireless_refresh(device: Device) {
+    crate::refresh::wake_refresh_daemon();
+
+    tokio::spawn(async move {
+        if device.is_network() {
+            return;
+        }
+
+        if let Err(e) = device.enable_wireless_connections().await {
+            log::debug!(
+                "Could not enable wireless connections for {}: {e}",
+                device.udid
+            );
+        }
+    });
 }
 
 pub(crate) fn tray_subscription() -> Subscription<Message> {
@@ -520,7 +548,8 @@ pub(crate) async fn run_installation(
                         .to_xml_format()
                         .parse::<chrono::DateTime<chrono::Utc>>()
                         .unwrap_or_else(|_| chrono::Utc::now() + chrono::Duration::days(4));
-                    let scheduled_refresh = scheduled_refresh - chrono::Duration::days(3);
+                    let scheduled_refresh =
+                        scheduled_refresh - chrono::Duration::days(store.refresh_days_before() as i64);
 
                     let refresh_app = plume_store::RefreshApp {
                         name: package_file.get_name(),

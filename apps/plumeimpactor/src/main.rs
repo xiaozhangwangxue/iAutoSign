@@ -18,11 +18,19 @@ mod startup;
 mod subscriptions;
 mod tray;
 
-pub const APP_NAME: &str = "Impactor";
-pub const APP_NAME_VERSIONED: &str = concat!("Impactor", " - Version ", env!("CARGO_PKG_VERSION"));
+pub const APP_NAME: &str = "AutoSign";
+pub const APP_NAME_VERSIONED: &str =
+    concat!("自动签名助手 AutoSign - Version ", env!("CARGO_PKG_VERSION"));
 
 fn main() -> iced::Result {
-    env_logger::init();
+    init_logging();
+
+    // Make local anisette generation possible before anything touches Apple's
+    // servers.
+    defaults::ensure_anisette_libraries();
+
+    #[cfg(target_os = "windows")]
+    check_apple_drivers();
 
     rustls::crypto::ring::default_provider()
         .install_default()
@@ -74,6 +82,76 @@ fn main() -> iced::Result {
     check_gpu();
 
     run_daemon()
+}
+
+/// Writes the log next to the account data so that problems on a user's PC can
+/// be diagnosed afterwards (a GUI build has no console to print to).
+fn init_logging() {
+    use std::fs::OpenOptions;
+
+    let log_path = defaults::get_data_path().join("autosign.log");
+    let file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path);
+
+    let builder = env_logger::Builder::new();
+    let mut builder = builder;
+    builder.filter_level(log::LevelFilter::Info);
+
+    match file {
+        Ok(file) => {
+            builder.target(env_logger::Target::Pipe(Box::new(file)));
+        }
+        Err(_) => {
+            builder.target(env_logger::Target::Stderr);
+        }
+    }
+
+    // RUST_LOG still wins when it is set explicitly.
+    builder.parse_default_env();
+    let _ = builder.try_init();
+
+    log::info!("AutoSign {} starting", env!("CARGO_PKG_VERSION"));
+    log::info!("Log file: {}", log_path.display());
+}
+
+/// On a fresh Windows PC the Apple device drivers may not be installed yet.
+/// Without them nothing can see the phone, so tell the user instead of silently
+/// showing "no device connected".
+#[cfg(target_os = "windows")]
+fn check_apple_drivers() {
+    let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    else {
+        return;
+    };
+
+    let reachable = runtime.block_on(async {
+        match idevice::usbmuxd::UsbmuxdConnection::default().await {
+            Ok(mut connection) => connection.get_devices().await.is_ok(),
+            Err(_) => false,
+        }
+    });
+
+    if reachable {
+        return;
+    }
+
+    log::warn!("Apple Mobile Device Service is not reachable - drivers missing?");
+
+    rfd::MessageDialog::new()
+        .set_level(rfd::MessageLevel::Warning)
+        .set_title("AutoSign - 缺少 Apple 手机驱动")
+        .set_description(
+            "未检测到 Apple 手机驱动（Apple Mobile Device Service）。\n\n\
+             请重新运行 AutoSign 安装程序，保持“Apple 手机驱动与依赖”勾选；\
+             或手动安装 iTunes 后再打开 AutoSign。\n\n\
+             Apple Mobile Device Service was not found. Re-run the installer \
+             with the driver option enabled, or install iTunes manually.",
+        )
+        .show();
 }
 
 #[cfg(target_os = "linux")]

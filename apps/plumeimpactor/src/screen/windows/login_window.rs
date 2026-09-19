@@ -93,7 +93,9 @@ impl LoginWindow {
                 self.show_two_factor = false;
                 self.login_error = None;
                 self.two_factor_error = None;
-                let email = self.email.trim().to_string();
+                // Apple IDs are case-insensitive; normalising here keeps the
+                // account store key consistent no matter how it was typed.
+                let email = self.email.trim().to_lowercase();
                 let password = self.password.clone();
                 self.password.clear();
 

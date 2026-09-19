@@ -10,8 +10,8 @@ use crate::auth::account::{check_error, parse_response};
 use crate::auth::anisette_data::AnisetteData;
 use crate::auth::{
     Account, ChallengeRequest, ChallengeRequestBody, GSA_ENDPOINT, InitRequest, InitRequestBody,
-    LoginState, RequestHeader, TrustedPhoneNumber, TwoFactorAction, TwoFactorMethod,
-    TwoFactorRequest,
+    LoginState, PhoneNumber, RequestHeader, TrustedPhoneNumber, TwoFactorAction, TwoFactorMethod,
+    TwoFactorRequest, VerifyBody,
 };
 
 #[macro_export]
@@ -71,10 +71,28 @@ impl Account {
         // device handled the push. Fetched lazily the first time 2FA is needed.
         let mut trusted_phone_numbers: Vec<TrustedPhoneNumber> = Vec::new();
 
+        // Apple can keep reporting "a push was sent" (for example when the
+        // anisette/ADI identity is not stable). Re-sending the push every time
+        // spams the user's devices with notifications and loops forever, so each
+        // channel is only used once per login attempt and we give up with a
+        // readable error after a few wrong codes.
+        const MAX_2FA_ATTEMPTS: u32 = 5;
+        let mut device_push_sent = false;
+        let mut sms_sent = false;
+        let mut verification_attempts: u32 = 0;
+
         loop {
             match response {
                 LoginState::NeedsDevice2FA => {
-                    response = _self.send_2fa_to_devices().await?;
+                    if device_push_sent {
+                        log::warn!(
+                            "Apple still reports a pending device 2FA request; asking for the code instead of sending another push"
+                        );
+                        response = LoginState::Needs2FAVerification;
+                    } else {
+                        device_push_sent = true;
+                        response = _self.send_2fa_to_devices().await?;
+                    }
                     if trusted_phone_numbers.is_empty() {
                         if let Ok(extras) = _self.get_auth_extras().await {
                             trusted_phone_numbers = extras.trusted_phone_numbers;
@@ -82,6 +100,15 @@ impl Account {
                     }
                 }
                 LoginState::Needs2FAVerification => {
+                    verification_attempts += 1;
+                    if verification_attempts > MAX_2FA_ATTEMPTS {
+                        return Err(Error::AuthSrpWithMessage(
+                            0,
+                            "Apple rejected too many verification codes. Please try again in a few minutes."
+                                .to_string(),
+                        ));
+                    }
+
                     let request = TwoFactorRequest {
                         method: TwoFactorMethod::Device,
                         trusted_phone_numbers: trusted_phone_numbers.clone(),
@@ -104,9 +131,27 @@ impl Account {
                         }
                     }
                     let id = trusted_phone_numbers.first().map(|p| p.id).unwrap_or(1);
-                    response = _self.send_sms_2fa_to_devices(id).await?;
+                    if sms_sent {
+                        response = LoginState::NeedsSMS2FAVerification(VerifyBody {
+                            phone_number: PhoneNumber { id },
+                            mode: "sms".to_string(),
+                            security_code: None,
+                        });
+                    } else {
+                        sms_sent = true;
+                        response = _self.send_sms_2fa_to_devices(id).await?;
+                    }
                 }
                 LoginState::NeedsSMS2FAVerification(body) => {
+                    verification_attempts += 1;
+                    if verification_attempts > MAX_2FA_ATTEMPTS {
+                        return Err(Error::AuthSrpWithMessage(
+                            0,
+                            "Apple rejected too many verification codes. Please try again in a few minutes."
+                                .to_string(),
+                        ));
+                    }
+
                     let request = TwoFactorRequest {
                         method: TwoFactorMethod::Sms,
                         trusted_phone_numbers: trusted_phone_numbers.clone(),

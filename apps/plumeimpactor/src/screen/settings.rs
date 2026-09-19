@@ -30,6 +30,7 @@ pub enum Message {
     TeamsLoaded(String, Vec<Team>),
     ToggleAutoStart(bool),
     SelectLocale(Option<String>),
+    SelectRefreshDays(u32),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,6 +92,7 @@ impl SettingsScreen {
             Message::ToggleAutoStart(_) => Task::none(),
             Message::SelectTeam(_, _) => Task::none(),
             Message::SelectLocale(_) => Task::none(),
+            Message::SelectRefreshDays(_) => Task::none(),
             _ => Task::none(),
         }
     }
@@ -195,9 +197,22 @@ impl SettingsScreen {
         let auto_start_enabled = crate::startup::auto_start_enabled();
         content = content.push(self.view_auto_start_toggle(auto_start_enabled));
         content = content.push(self.view_language_picker(selected_locale));
+        content = content.push(self.view_refresh_days(store.refresh_days_before()));
         content = content.push(self.view_account_buttons(selected_index));
 
         content.into()
+    }
+
+    /// How many days before the profile expires an automatic renewal should run.
+    fn view_refresh_days(&self, current: u32) -> Element<'_, Message> {
+        let choices: Vec<u32> = (1..=6).collect();
+
+        let picker = pick_list(choices, Some(current), Message::SelectRefreshDays)
+            .style(appearance::s_pick_list);
+
+        column![text(t!("settings_refresh_days")), picker]
+            .spacing(appearance::THEME_PADDING)
+            .into()
     }
 
     fn view_auto_start_toggle(&self, auto_start_enabled: bool) -> Element<'_, Message> {

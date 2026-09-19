@@ -12,9 +12,25 @@ members = [
 ]
 default-members = ["apps/plumeimpactor"]
 
+# Vendored copies of the two git dependencies. Building behind a slow or
+# unreliable GitHub connection otherwise stalls for a very long time while
+# cargo fetches their full history.
+[patch."https://github.com/jkcoxson/idevice"]
+idevice = { path = "3rdparty/idevice/idevice" }
+
+[patch."https://github.com/Dadoum/android-loader"]
+android-loader = { path = "3rdparty/android-loader" }
+
+[patch."https://github.com/PlumeImpactor/plume-apple-platform-rs"]
+apple-bundles = { path = "3rdparty/apple-platform-rs/apple-bundles" }
+apple-codesign = { path = "3rdparty/apple-platform-rs/apple-codesign" }
+apple-flat-package = { path = "3rdparty/apple-platform-rs/apple-flat-package" }
+apple-xar = { path = "3rdparty/apple-platform-rs/apple-xar" }
+cpio-archive = { path = "3rdparty/apple-platform-rs/cpio-archive" }
+
 [workspace.package]
 edition = "2024"
-version = "2.6.3"
+version = "2.7.0"
 authors = ["C <claration@riseup.net>"]
 license = "MIT"
 repository = "https://github.com/claration/Impactor"

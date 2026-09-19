@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::thread;
 use std::time::Duration;
 
@@ -13,6 +13,16 @@ use plume_utils::{Bundle, Device, Signer, SignerMode, SignerOptions};
 use crate::defaults::get_data_path;
 
 pub type ConnectedDevices = Arc<Mutex<HashMap<String, Device>>>;
+
+static WAKE_TX: OnceLock<mpsc::Sender<()>> = OnceLock::new();
+
+/// Wake the refresh daemon so it re-checks immediately instead of waiting for the
+/// next periodic tick. Called whenever a device (re)connects.
+pub fn wake_refresh_daemon() {
+    if let Some(tx) = WAKE_TX.get() {
+        let _ = tx.send(());
+    }
+}
 
 struct RefreshGuard {
     udid: String,
@@ -51,6 +61,9 @@ impl RefreshDaemon {
 
     pub fn spawn(self) -> thread::JoinHandle<()> {
         thread::spawn(move || {
+            let (wake_tx, wake_rx) = mpsc::channel::<()>();
+            let _ = WAKE_TX.set(wake_tx);
+
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -60,15 +73,38 @@ impl RefreshDaemon {
                 if let Err(e) = rt.block_on(self.check_and_refresh()) {
                     log::error!("Refresh daemon error: {}", e);
                     notify_rust::Notification::new()
-                        .summary("Impactor")
+                        .summary(crate::APP_NAME)
                         .body(&format!("Failed to refresh: {}", e))
                         .show()
                         .ok();
                 }
 
-                thread::sleep(self.check_interval);
+                // Wait for the periodic interval, but wake up early when a device
+                // connects so renewals happen as soon as the phone is reachable.
+                match wake_rx.recv_timeout(self.check_interval) {
+                    Ok(()) => {
+                        log::info!("Refresh daemon woken early by device activity");
+                    }
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(mpsc::RecvTimeoutError::Disconnected) => {
+                        thread::sleep(self.check_interval);
+                    }
+                }
             }
         })
+    }
+
+    /// Ask usbmuxd for a device by UDID.
+    ///
+    /// This finds devices which are reachable over the local network as well as
+    /// devices which are physically plugged in: once "sync over Wi-Fi" has been
+    /// enabled for a paired device, Apple's usbmuxd also reports it while it is
+    /// on the same network.
+    async fn find_devices_by_udid(udid: &str) -> Option<Device> {
+        let mut usbmuxd = idevice::usbmuxd::UsbmuxdConnection::default().await.ok()?;
+        let devices = usbmuxd.get_devices().await.ok()?;
+        let found = devices.into_iter().find(|device| device.udid == udid)?;
+        Some(Device::new(found).await)
     }
 
     async fn check_and_refresh(&self) -> Result<(), String> {
@@ -93,15 +129,29 @@ impl RefreshDaemon {
 
                     log::info!("App at {:?} needs refresh for device {}", app.path, udid);
 
-                    let device = self
+                    let mut device = self
                         .connected_devices
                         .lock()
                         .ok()
                         .and_then(|devices| devices.get(udid).cloned());
 
+                    // The UI only tracks devices announced by usbmuxd's listen
+                    // stream. Look the device up directly as well so that phones
+                    // connected over Wi-Fi (or connected while the UI was busy)
+                    // still get refreshed.
+                    if device.is_none() {
+                        device = Self::find_devices_by_udid(udid).await;
+
+                        if let Some(found) = &device {
+                            if let Ok(mut devices) = self.connected_devices.lock() {
+                                devices.insert(found.udid.clone(), found.clone());
+                            }
+                        }
+                    }
+
                     let Some(device) = device else {
                         log::debug!(
-                            "App at {:?} is due for refresh on {}, but no matching connected device was found. Retrying in {} seconds.",
+                            "App at {:?} is due for refresh on {}, but the device is not reachable over USB or Wi-Fi. Retrying in {} seconds.",
                             app.path,
                             udid,
                             self.check_interval.as_secs()
@@ -158,7 +208,7 @@ impl RefreshDaemon {
         log::info!("Starting refresh for app at {:?}", app.path);
 
         notify_rust::Notification::new()
-            .summary("Impactor")
+            .summary(crate::APP_NAME)
             .body(&format!(
                 "Started refreshing {} for {}",
                 app.name.as_deref().unwrap_or("???"),
@@ -242,7 +292,7 @@ impl RefreshDaemon {
         log::info!("Successfully refreshed app at {:?}", app.path);
 
         notify_rust::Notification::new()
-            .summary("Impactor")
+            .summary(crate::APP_NAME)
             .body(&format!(
                 "Successfully refreshed {} for {}",
                 app.name.as_deref().unwrap_or("???"),
@@ -365,7 +415,8 @@ impl RefreshDaemon {
             .to_xml_format()
             .parse::<chrono::DateTime<chrono::Utc>>()
             .unwrap_or_else(|_| Utc::now() + chrono::Duration::days(4));
-        let scheduled_refresh = scheduled_refresh - chrono::Duration::days(3);
+        let refresh_days_before = store.refresh_days_before() as i64;
+        let scheduled_refresh = scheduled_refresh - chrono::Duration::days(refresh_days_before);
 
         let mut store = store.clone();
         let mut updated_device = refresh_device.clone();

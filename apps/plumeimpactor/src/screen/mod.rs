@@ -592,6 +592,14 @@ impl Impactor {
                             }
                             Task::none()
                         }
+                        settings::Message::SelectRefreshDays(days) => {
+                            if let Some(store) = &mut self.account_store {
+                                if let Err(err) = store.set_refresh_days_before_sync(days) {
+                                    log::error!("Failed to persist refresh days: {err}");
+                                }
+                            }
+                            screen.update(msg).map(Message::SettingsScreen)
+                        }
                         _ => screen.update(msg).map(Message::SettingsScreen),
                     }
                 } else {
@@ -701,7 +709,7 @@ impl Impactor {
                                                     e
                                                 );
                                                 notify_rust::Notification::new()
-                                                    .summary("Impactor")
+                                                    .summary(crate::APP_NAME)
                                                     .body(&format!(
                                                         "Failed to refresh {} for {}: {}",
                                                         app.name.as_deref().unwrap_or("???"),

@@ -1,0 +1,21 @@
+on:
+  push:
+    branches:
+      - main
+    tags-ignore:
+      - '**'
+  pull_request:
+  schedule:
+    - cron: '12 15 * * *'
+  workflow_dispatch:
+jobs:
+  build-and-test:
+    uses: indygreg/actions/.github/workflows/rust-workspace-build-and-test.yml@10a44fe88eeb39ae10b317766e420dfa0898d183
+    with:
+      actions_ref: "10a44fe88eeb39ae10b317766e420dfa0898d183"
+      msrv: "1.81.0"
+      sccache_s3_bucket: apple-platform-rs-sccache
+      no_default_features: true
+    secrets:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
