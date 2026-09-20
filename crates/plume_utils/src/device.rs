@@ -77,9 +77,66 @@ impl Device {
     /// (the address comes from Apple's own mDNS advertisement) is what makes
     /// renewals work after the cable is unplugged.
     pub async fn connect_over_network(udid: &str) -> Result<Device, Error> {
-        let address = crate::network::discover_address(udid, std::time::Duration::from_secs(5))
-            .ok_or_else(|| Error::Other(format!("{udid} was not found on the local network")))?;
+        Self::connect_over_network_with_mac(udid, None).await
+    }
 
+    /// Like [`Device::connect_over_network`], but also accepts the phone's
+    /// Wi-Fi MAC address (learned during a USB session) which allows finding it
+    /// through the ARP table when mDNS is filtered by the network.
+    pub async fn connect_over_network_with_mac(
+        udid: &str,
+        wifi_mac: Option<&str>,
+    ) -> Result<Device, Error> {
+        let mut candidates: Vec<IpAddr> = Vec::new();
+
+        if let Some(address) =
+            crate::network::discover_address(udid, std::time::Duration::from_secs(5))
+        {
+            candidates.push(address);
+        }
+
+        if let Some(mac) = wifi_mac {
+            if let Some(address) = crate::network::arp_address_for_mac(mac) {
+                log::info!("{udid} is in the ARP table at {address}");
+                candidates.push(address);
+            }
+        }
+
+        if candidates.is_empty() {
+            log::info!(
+                "Neither mDNS nor ARP found {udid}; scanning the local network for a phone (port 62078)..."
+            );
+            let found =
+                crate::network::scan_local_subnet(62078, std::time::Duration::from_millis(700))
+                    .await;
+            if !found.is_empty() {
+                log::info!("Network scan found {} candidate(s): {found:?}", found.len());
+            }
+            candidates.extend(found);
+        }
+
+        let mut last_error = None;
+
+        for address in candidates {
+            match Self::try_network_device(udid, address).await {
+                Ok(device) => return Ok(device),
+                Err(err) => {
+                    log::warn!("{address} does not look like {udid}: {err}");
+                    last_error = Some(err);
+                }
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| {
+            Error::Other(format!(
+                "{udid} was not found on the local network (mDNS, ARP and a port scan all came up empty)"
+            ))
+        }))
+    }
+
+    /// Opens a direct Wi-Fi connection to `address` and confirms that the phone
+    /// on the other end really is `udid`.
+    async fn try_network_device(udid: &str, address: IpAddr) -> Result<Device, Error> {
         let mut usbmuxd = UsbmuxdConnection::default().await?;
         let pairing_file = usbmuxd.get_pair_record(udid).await?;
 
@@ -93,21 +150,34 @@ impl Device {
             is_mac: false,
         };
 
-        // Best effort: ask the phone for its name so the UI can show it.
-        let name = match device.provider(CONNECTION_LABEL) {
-            Ok(provider) => match LockdownClient::connect(provider.as_ref()).await {
-                Ok(mut lockdown) => lockdown
-                    .get_value(None, None)
-                    .await
-                    .ok()
-                    .map(|values| get_dict_string!(values, "DeviceName"))
-                    .unwrap_or_default(),
-                Err(_) => String::new(),
-            },
-            Err(_) => String::new(),
-        };
+        let provider = device.provider(CONNECTION_LABEL)?;
+        let mut lockdown = LockdownClient::connect(provider.as_ref()).await?;
+        let values = lockdown.get_value(None, None).await?;
 
-        Ok(Device { name, ..device })
+        let reported = get_dict_string!(values, "UniqueDeviceID");
+        if !reported.is_empty() && !same_udid(&reported, udid) {
+            return Err(Error::Other(format!(
+                "device at {address} reports UDID {reported}"
+            )));
+        }
+
+        Ok(Device {
+            name: get_dict_string!(values, "DeviceName"),
+            ..device
+        })
+    }
+
+    /// The phone's Wi-Fi hardware address, read while it is connected over USB.
+    ///
+    /// Remembering it lets AutoSign find the phone through the ARP table later,
+    /// which keeps wireless renewals working on networks that filter mDNS.
+    pub async fn wifi_mac(&self) -> Option<String> {
+        let provider = self.provider(CONNECTION_LABEL).ok()?;
+        let mut lockdown = LockdownClient::connect(provider.as_ref()).await.ok()?;
+        let values = lockdown.get_value(None, None).await.ok()?;
+
+        let mac = get_dict_string!(values, "WiFiAddress");
+        (!mac.is_empty()).then_some(mac)
     }
 
     /// Provider for whichever transport this device is reachable through:
@@ -304,6 +374,30 @@ impl Device {
         Ok(())
     }
 
+    /// Reads back what the phone actually stored for wireless sync.
+    ///
+    /// iOS silently ignores some writes, so this is logged after enabling the
+    /// setting: it is the difference between "we asked for Wi-Fi" and "the phone
+    /// is really advertising itself".
+    pub async fn wireless_state(&self) -> Option<String> {
+        let provider = self.provider(CONNECTION_LABEL).ok()?;
+        let mut lockdown = LockdownClient::connect(provider.as_ref()).await.ok()?;
+
+        let usbmuxd = UsbmuxdConnection::default().await.ok();
+        if let Some(mut usbmuxd) = usbmuxd {
+            if let Ok(pairing_file) = usbmuxd.get_pair_record(&self.udid).await {
+                lockdown.start_session(&pairing_file).await.ok();
+            }
+        }
+
+        let values = lockdown
+            .get_value(Some("com.apple.mobile.wireless_lockdown"), None)
+            .await
+            .ok()?;
+
+        Some(format!("{values:?}"))
+    }
+
     /// Fully prepares the phone for wireless use.
     ///
     /// * pairs the phone when there is no pairing record yet - iOS then shows
@@ -322,7 +416,15 @@ impl Device {
             self.pair().await?;
         }
 
-        self.enable_wireless_connections().await
+        self.enable_wireless_connections().await?;
+
+        // iOS ignores some writes without telling us, so read the setting back.
+        match self.wireless_state().await {
+            Some(state) => log::info!("Phone wireless settings: {state}"),
+            None => log::warn!("Could not read back the phone's wireless settings"),
+        }
+
+        Ok(())
     }
 
     /// Confirms that the phone can be reached over Wi-Fi and returns how.
@@ -477,6 +579,19 @@ fn get_app_name_from_info(info: &Value) -> Option<String> {
                 .and_then(|value| value.as_string())
         })
         .map(|value| value.to_string())
+}
+
+/// UDIDs are compared without separators and case differences.
+fn same_udid(left: &str, right: &str) -> bool {
+    let normalize = |value: &str| -> String {
+        value
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .collect::<String>()
+            .to_lowercase()
+    };
+
+    normalize(left) == normalize(right)
 }
 
 impl fmt::Display for Device {

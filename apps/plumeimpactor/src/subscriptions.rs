@@ -139,6 +139,16 @@ fn prepare_wireless_refresh(device: Device) {
             }
         }
 
+        // Remember the phone's Wi-Fi hardware address: renewals can then find
+        // it through the ARP table on networks that filter mDNS.
+        if let Some(mac) = device.wifi_mac().await {
+            log::info!("{} Wi-Fi address is {mac}", device.udid);
+
+            let directory = crate::defaults::get_data_path().join("wifi_macs");
+            let _ = std::fs::create_dir_all(&directory);
+            let _ = std::fs::write(directory.join(format!("{}.txt", device.udid)), &mac);
+        }
+
         // Verify the wireless path straight away, while the cable is still
         // connected: the phone starts advertising itself over mDNS as soon as
         // wireless sync is on. This turns "does it work after unplugging?" into

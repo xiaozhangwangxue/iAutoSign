@@ -107,6 +107,27 @@ impl RefreshDaemon {
     async fn find_devices_by_udid(udid: &str) -> Option<Device> {
         let mut usbmuxd = idevice::usbmuxd::UsbmuxdConnection::default().await.ok()?;
         let devices = usbmuxd.get_devices().await.ok()?;
+
+        // Knowing what Apple's service can see makes the logs much clearer:
+        // it shows whether the phone is reported over USB, over Wi-Fi, or not
+        // at all.
+        if !devices.is_empty() {
+            let summary: Vec<String> = devices
+                .iter()
+                .map(|device| {
+                    let kind = match &device.connection_type {
+                        idevice::usbmuxd::Connection::Usb => "USB",
+                        idevice::usbmuxd::Connection::Network(_) => "Wi-Fi",
+                        idevice::usbmuxd::Connection::Unknown(_) => "unknown",
+                    };
+
+                    format!("{} ({kind})", device.udid)
+                })
+                .collect();
+
+            log::info!("Apple's device service sees: {summary:?}");
+        }
+
         let found = devices.into_iter().find(|device| device.udid == udid)?;
         Some(Device::new(found).await)
     }
@@ -192,7 +213,17 @@ impl RefreshDaemon {
                     // local network. This is what keeps renewals working after
                     // the cable is unplugged.
                     if device.is_none() {
-                        match Device::connect_over_network(udid).await {
+                        let cached_mac = std::fs::read_to_string(
+                            get_data_path()
+                                .join("wifi_macs")
+                                .join(format!("{udid}.txt")),
+                        )
+                        .ok()
+                        .map(|value| value.trim().to_string());
+
+                        match Device::connect_over_network_with_mac(udid, cached_mac.as_deref())
+                            .await
+                        {
                             Ok(found) => {
                                 log::info!(
                                     "{} is reachable over Wi-Fi at {:?}",
