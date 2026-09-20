@@ -4,6 +4,7 @@ pub mod diagnostics;
 mod device;
 pub mod errors;
 pub mod locale;
+pub mod network;
 mod options;
 mod package;
 mod signer;

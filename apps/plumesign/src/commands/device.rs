@@ -55,6 +55,7 @@ pub async fn execute(args: DeviceArgs) -> Result<()> {
                     udid: String::new(),
                     device_id: 0,
                     usbmuxd_device: None,
+                    network_address: None,
                     is_mac: true,
                 }
             } else {

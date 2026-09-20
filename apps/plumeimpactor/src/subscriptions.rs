@@ -33,6 +33,7 @@ pub(crate) fn device_listener() -> Subscription<Message> {
                                     udid: mac_udid,
                                     device_id: u32::MAX,
                                     usbmuxd_device: None,
+                                    network_address: None,
                                     is_mac: true,
                                 }));
                             }
@@ -118,11 +119,16 @@ fn prepare_wireless_refresh(device: Device) {
             return;
         }
 
-        if let Err(e) = device.enable_wireless_connections().await {
-            log::debug!(
-                "Could not enable wireless connections for {}: {e}",
+        match device.enable_wireless_connections().await {
+            Ok(()) => log::info!(
+                "Wi-Fi renewals enabled for {} ({})",
+                device.name,
                 device.udid
-            );
+            ),
+            Err(e) => log::warn!(
+                "Could not enable Wi-Fi renewals for {} yet: {e}",
+                device.udid
+            ),
         }
     });
 }

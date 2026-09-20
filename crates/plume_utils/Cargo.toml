@@ -19,6 +19,9 @@ image.workspace = true
 goblin.workspace = true
 zip.workspace = true
 flate2.workspace = true
+# Finds a paired iPhone on the local network (Apple's Wi-Fi sync advertises
+# itself through mDNS); used for wireless renewals.
+mdns-sd = "0.21"
 plume_core = { path = "../plume_core", features = ["tweaks"] }
 plume_store = { path = "../plume_store" }
 decompress = { path = "../../3rdparty/decompress" }

@@ -1,11 +1,13 @@
 use std::fmt;
+use std::net::IpAddr;
 use std::path::{Component, Path, PathBuf};
 
 use idevice::core_device_proxy::CoreDeviceProxy;
 use idevice::installation_proxy::InstallationProxyClient;
 use idevice::lockdown::LockdownClient;
 use idevice::misagent::MisagentClient;
-use idevice::provider::UsbmuxdProvider;
+use idevice::pairing_file::PairingFile;
+use idevice::provider::{IdeviceProvider, TcpProvider, UsbmuxdProvider};
 use idevice::remote_pairing::{RemotePairingClient, RpPairingFile};
 use idevice::rsd::RsdHandshake;
 use idevice::usbmuxd::{Connection, UsbmuxdAddr, UsbmuxdDevice};
@@ -41,6 +43,10 @@ pub struct Device {
     pub udid: String,
     pub device_id: u32,
     pub usbmuxd_device: Option<UsbmuxdDevice>,
+    /// Set when the phone was found through Wi-Fi instead of through Apple's
+    /// device service: all communication then goes straight to this address.
+    pub network_address: Option<IpAddr>,
+    pairing_file: Option<PairingFile>,
     // On x86_64 macs, `is_mac` variable should never be true
     // since its only true if the device is added manually.
     pub is_mac: bool,
@@ -57,8 +63,74 @@ impl Device {
             udid: usbmuxd_device.udid.clone(),
             device_id: usbmuxd_device.device_id.clone(),
             usbmuxd_device: Some(usbmuxd_device),
+            network_address: None,
+            pairing_file: None,
             is_mac: false,
         }
+    }
+
+    /// Finds a paired phone on the local network and prepares a direct Wi-Fi
+    /// connection to it.
+    ///
+    /// Apple's Windows service only reports phones that it discovered itself,
+    /// and that discovery is not always running. Talking to the phone directly
+    /// (the address comes from Apple's own mDNS advertisement) is what makes
+    /// renewals work after the cable is unplugged.
+    pub async fn connect_over_network(udid: &str) -> Result<Device, Error> {
+        let address = crate::network::discover_address(udid, std::time::Duration::from_secs(5))
+            .ok_or_else(|| Error::Other(format!("{udid} was not found on the local network")))?;
+
+        let mut usbmuxd = UsbmuxdConnection::default().await?;
+        let pairing_file = usbmuxd.get_pair_record(udid).await?;
+
+        let device = Device {
+            name: String::new(),
+            udid: udid.to_string(),
+            device_id: 0,
+            usbmuxd_device: None,
+            network_address: Some(address),
+            pairing_file: Some(pairing_file),
+            is_mac: false,
+        };
+
+        // Best effort: ask the phone for its name so the UI can show it.
+        let name = match device.provider(CONNECTION_LABEL) {
+            Ok(provider) => match LockdownClient::connect(provider.as_ref()).await {
+                Ok(mut lockdown) => lockdown
+                    .get_value(None, None)
+                    .await
+                    .ok()
+                    .map(|values| get_dict_string!(values, "DeviceName"))
+                    .unwrap_or_default(),
+                Err(_) => String::new(),
+            },
+            Err(_) => String::new(),
+        };
+
+        Ok(Device { name, ..device })
+    }
+
+    /// Provider for whichever transport this device is reachable through:
+    /// Apple's device service for USB (and discovered Wi-Fi) devices, or a
+    /// direct TCP connection for phones found on the local network.
+    fn provider(&self, label: &str) -> Result<Box<dyn IdeviceProvider>, Error> {
+        if let Some(device) = &self.usbmuxd_device {
+            return Ok(Box::new(device.to_provider(
+                UsbmuxdAddr::from_env_var().unwrap_or_default(),
+                label,
+            )));
+        }
+
+        if let (Some(address), Some(pairing_file)) = (self.network_address, &self.pairing_file) {
+            return Ok(Box::new(TcpProvider {
+                addr: address,
+                scope_id: None,
+                pairing_file: pairing_file.clone(),
+                label: label.to_string(),
+            }));
+        }
+
+        Err(Error::Other("Device is not connected".to_string()))
     }
 
     async fn get_name_from_usbmuxd_device(device: &UsbmuxdDevice) -> Result<String, Error> {
@@ -70,17 +142,9 @@ impl Device {
     }
 
     pub async fn installed_apps(&self) -> Result<Vec<SignerAppReal>, Error> {
-        let device = match &self.usbmuxd_device {
-            Some(dev) => dev,
-            None => return Err(Error::Other("Device is not connected via USB".to_string())),
-        };
+        let provider = self.provider(INSTALLATION_LABEL)?;
 
-        let provider = device.to_provider(
-            UsbmuxdAddr::from_env_var().unwrap_or_default(),
-            INSTALLATION_LABEL,
-        );
-
-        let mut ic = InstallationProxyClient::connect(&provider).await?;
+        let mut ic = InstallationProxyClient::connect(provider.as_ref()).await?;
         let apps = ic.get_apps(Some("User"), None).await?;
 
         let mut found_apps = Vec::new();
@@ -105,33 +169,18 @@ impl Device {
     }
 
     pub async fn is_app_installed(&self, bundle_id: &str) -> Result<bool, Error> {
-        let device = match &self.usbmuxd_device {
-            Some(dev) => dev,
-            None => return Err(Error::Other("Device is not connected via USB".to_string())),
-        };
+        let provider = self.provider(INSTALLATION_LABEL)?;
 
-        let provider = device.to_provider(
-            UsbmuxdAddr::from_env_var().unwrap_or_default(),
-            INSTALLATION_LABEL,
-        );
-
-        let mut ic = InstallationProxyClient::connect(&provider).await?;
+        let mut ic = InstallationProxyClient::connect(provider.as_ref()).await?;
         let apps = ic.get_apps(Some("User"), None).await?;
 
         Ok(apps.contains_key(bundle_id))
     }
 
     pub async fn install_profile(&self, profile: &MobileProvision) -> Result<(), Error> {
-        if self.usbmuxd_device.is_none() {
-            return Err(Error::Other("Device is not connected via USB".to_string()));
-        }
+        let provider = self.provider(INSTALLATION_LABEL)?;
 
-        let provider = self.usbmuxd_device.clone().unwrap().to_provider(
-            UsbmuxdAddr::from_env_var().unwrap_or_default(),
-            INSTALLATION_LABEL,
-        );
-
-        let mut mc = MisagentClient::connect(&provider).await?;
+        let mut mc = MisagentClient::connect(provider.as_ref()).await?;
         mc.install(profile.data.clone()).await?;
 
         Ok(())
@@ -144,12 +193,9 @@ impl Device {
 
         let mut usbmuxd = UsbmuxdConnection::default().await?;
 
-        let provider = self.usbmuxd_device.clone().unwrap().to_provider(
-            UsbmuxdAddr::from_env_var().unwrap_or_default(),
-            INSTALLATION_LABEL,
-        );
+        let provider = self.provider(INSTALLATION_LABEL)?;
 
-        let mut lc = LockdownClient::connect(&provider).await?;
+        let mut lc = LockdownClient::connect(provider.as_ref()).await?;
         let id = uuid::Uuid::new_v4().to_string().to_uppercase();
         let buid = usbmuxd.get_buid().await?;
         let mut pairing_file = lc.pair(id, buid, None).await?;
@@ -166,21 +212,13 @@ impl Device {
         identifier: &String,
         path: &str,
     ) -> Result<(), Error> {
-        if self.usbmuxd_device.is_none() {
-            return Err(Error::Other("Device is not connected via USB".to_string()));
-        }
-
         let mut usbmuxd = UsbmuxdConnection::default().await?;
-        let provider = self
-            .usbmuxd_device
-            .clone()
-            .unwrap()
-            .to_provider(UsbmuxdAddr::default(), HOUSE_ARREST_LABEL);
+        let provider = self.provider(HOUSE_ARREST_LABEL)?;
         let mut pairing_file = usbmuxd.get_pair_record(&self.udid).await?;
 
         // saving pairing record requires enabling wifi debugging
         // since operations are done over wifi
-        let mut lc = LockdownClient::connect(&provider).await?;
+        let mut lc = LockdownClient::connect(provider.as_ref()).await?;
         lc.start_session(&pairing_file).await.ok();
         lc.set_value(
             "EnableWifiDebugging",
@@ -192,7 +230,7 @@ impl Device {
 
         pairing_file.udid = Some(self.udid.clone());
 
-        let hc = HouseArrestClient::connect(&provider).await?;
+        let hc = HouseArrestClient::connect(provider.as_ref()).await?;
         let mut ac = hc.vend_documents(identifier.clone()).await?;
         if let Some(parent) = Path::new(path).parent() {
             let mut current = String::new();
@@ -221,10 +259,11 @@ impl Device {
     /// True when this device is reached over the local network (Wi-Fi) rather
     /// than over a USB cable.
     pub fn is_network(&self) -> bool {
-        matches!(
-            self.usbmuxd_device.as_ref().map(|d| &d.connection_type),
-            Some(Connection::Network(_))
-        )
+        self.network_address.is_some()
+            || matches!(
+                self.usbmuxd_device.as_ref().map(|d| &d.connection_type),
+                Some(Connection::Network(_))
+            )
     }
 
     /// Ask the device to also accept lockdown connections over Wi-Fi.
@@ -271,19 +310,13 @@ impl Device {
         path: &str,
         path_to_store: PathBuf,
     ) -> Result<(), Error> {
-        if self.usbmuxd_device.is_none() {
-            return Err(Error::Other("Device is not connected via USB".to_string()));
-        }
+        let provider = self.provider(HOUSE_ARREST_LABEL)?;
 
-        let provider = self
-            .usbmuxd_device
-            .clone()
-            .unwrap()
-            .to_provider(UsbmuxdAddr::default(), HOUSE_ARREST_LABEL);
+        let pairing_file = self
+            .get_rsd_pairing_file(provider.as_ref(), path_to_store)
+            .await?;
 
-        let pairing_file = self.get_rsd_pairing_file(&provider, path_to_store).await?;
-
-        let hc = HouseArrestClient::connect(&provider).await?;
+        let hc = HouseArrestClient::connect(provider.as_ref()).await?;
         let mut ac = hc.vend_documents(identifier.clone()).await?;
         if let Some(parent) = Path::new(path).parent() {
             let mut current = String::new();
@@ -311,7 +344,7 @@ impl Device {
 
     async fn get_rsd_pairing_file(
         &self,
-        provider: &UsbmuxdProvider,
+        provider: &dyn IdeviceProvider,
         path: PathBuf,
     ) -> Result<RpPairingFile, Error> {
         let pairing_file_path = path.join(format!("plume_{}.plist", self.udid));
@@ -380,14 +413,7 @@ impl Device {
         F: FnMut(i32) -> Fut + Send + Clone + 'static,
         Fut: std::future::Future<Output = ()> + Send,
     {
-        if self.usbmuxd_device.is_none() {
-            return Err(Error::Other("Device is not connected via USB".to_string()));
-        }
-
-        let provider = self.usbmuxd_device.clone().unwrap().to_provider(
-            UsbmuxdAddr::from_env_var().unwrap_or_default(),
-            INSTALLATION_LABEL,
-        );
+        let provider = self.provider(INSTALLATION_LABEL)?;
 
         let callback = move |(progress, _): (u64, ())| {
             let mut cb = progress_callback.clone();
@@ -398,8 +424,14 @@ impl Device {
 
         let state = ();
 
-        installation::install_package_with_callback(&provider, app_path, None, callback, state)
-            .await?;
+        installation::install_package_with_callback(
+            provider.as_ref(),
+            app_path,
+            None,
+            callback,
+            state,
+        )
+        .await?;
 
         Ok(())
     }

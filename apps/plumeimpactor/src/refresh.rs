@@ -185,11 +185,31 @@ impl RefreshDaemon {
                     // still get refreshed.
                     if device.is_none() {
                         device = Self::find_devices_by_udid(udid).await;
+                    }
 
-                        if let Some(found) = &device {
-                            if let Ok(mut devices) = self.connected_devices.lock() {
-                                devices.insert(found.udid.clone(), found.clone());
+                    // Still nothing? Apple's service does not always report
+                    // network devices, so look for the phone directly on the
+                    // local network. This is what keeps renewals working after
+                    // the cable is unplugged.
+                    if device.is_none() {
+                        match Device::connect_over_network(udid).await {
+                            Ok(found) => {
+                                log::info!(
+                                    "{} is reachable over Wi-Fi at {:?}",
+                                    udid,
+                                    found.network_address
+                                );
+                                device = Some(found);
                             }
+                            Err(err) => {
+                                log::debug!("{udid} is not reachable over Wi-Fi either: {err}");
+                            }
+                        }
+                    }
+
+                    if let Some(found) = &device {
+                        if let Ok(mut devices) = self.connected_devices.lock() {
+                            devices.insert(found.udid.clone(), found.clone());
                         }
                     }
 
