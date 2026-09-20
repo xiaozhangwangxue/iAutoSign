@@ -14,12 +14,54 @@ pub const APPLE_WIFI_SERVICE: &str = "_apple-mobdev2._tcp.local.";
 
 /// Browses for `udid` and returns the address it can be reached at.
 pub fn discover_address(udid: &str, timeout: Duration) -> Option<IpAddr> {
-    let daemon = mdns_sd::ServiceDaemon::new().ok()?;
-    let receiver = daemon.browse(APPLE_WIFI_SERVICE).ok()?;
+    let adverts = browse_apple_devices(timeout);
 
     let wanted = normalize_udid(udid);
+
+    adverts
+        .iter()
+        .find(|advert| {
+            advert
+                .device_id
+                .as_deref()
+                .map(|id| normalize_udid(id) == wanted)
+                .unwrap_or_else(|| normalize_udid(&advert.name).contains(&wanted))
+        })
+        .map(|advert| advert.address)
+}
+
+/// Every Apple device that advertises wireless sync on this network.
+///
+/// The advertised name contains the *network* address of the phone, which on a
+/// network using iOS' private Wi-Fi address feature is not the hardware address
+/// we learned over USB, and the TXT record does not always carry the UDID.
+/// Collecting all of them and verifying the identity after connecting is
+/// therefore the reliable approach.
+pub fn discover_all_addresses(timeout: Duration) -> Vec<IpAddr> {
+    browse_apple_devices(timeout)
+        .into_iter()
+        .map(|advert| advert.address)
+        .filter(is_private_lan)
+        .collect()
+}
+
+struct AppleAdvert {
+    name: String,
+    address: IpAddr,
+    device_id: Option<String>,
+}
+
+fn browse_apple_devices(timeout: Duration) -> Vec<AppleAdvert> {
+    let Ok(daemon) = mdns_sd::ServiceDaemon::new() else {
+        return Vec::new();
+    };
+
+    let Ok(receiver) = daemon.browse(APPLE_WIFI_SERVICE) else {
+        return Vec::new();
+    };
+
     let deadline = Instant::now() + timeout;
-    let mut result = None;
+    let mut adverts: Vec<AppleAdvert> = Vec::new();
     let mut seen: Vec<String> = Vec::new();
 
     while Instant::now() < deadline {
@@ -38,32 +80,25 @@ pub fn discover_address(udid: &str, timeout: Duration) -> Option<IpAddr> {
             service.get_addresses_v4()
         ));
 
-        // The TXT record carries the UDID (`deviceid`), which is the reliable
-        // way to tell phones apart; fall back to the instance name.
-        let matches_device = service
-            .get_property_val_str("deviceid")
-            .map(|id| normalize_udid(id) == wanted)
-            .unwrap_or_else(|| normalize_udid(service.get_fullname()).contains(&wanted));
-
-        if !matches_device {
-            continue;
-        }
-
-        let address = service
+        let Some(address) = service
             .get_addresses_v4()
             .into_iter()
             .next()
-            .map(IpAddr::V4);
+            .map(IpAddr::V4)
+        else {
+            continue;
+        };
 
-        if let Some(address) = address {
-            result = Some(address);
-            break;
-        }
+        adverts.push(AppleAdvert {
+            name: service.get_fullname().to_string(),
+            address,
+            device_id: service.get_property_val_str("deviceid").map(str::to_string),
+        });
     }
 
     let _ = daemon.shutdown();
 
-    if result.is_none() {
+    if adverts.is_empty() {
         if seen.is_empty() {
             log::info!(
                 "mDNS: no {APPLE_WIFI_SERVICE} service was advertised on this network"
@@ -71,9 +106,22 @@ pub fn discover_address(udid: &str, timeout: Duration) -> Option<IpAddr> {
         } else {
             log::info!("mDNS: saw {} Apple device advert(s): {seen:?}", seen.len());
         }
+    } else {
+        log::info!("mDNS: saw {} Apple device advert(s)", adverts.len());
     }
 
-    result
+    adverts
+}
+
+/// Only addresses that can realistically be a phone on the local network.
+///
+/// Keeps out VPN/CGNAT ranges (Tailscale, WARP, ...) which would otherwise fill
+/// the candidate list with hundreds of false positives.
+pub fn is_private_lan(address: &IpAddr) -> bool {
+    match address {
+        IpAddr::V4(v4) => v4.is_private(),
+        IpAddr::V6(_) => false,
+    }
 }
 
 /// Looks up `mac` (the phone's Wi-Fi address) in the operating system's ARP
@@ -148,7 +196,9 @@ pub async fn scan_local_subnet(port: u16, per_host_timeout: Duration) -> Vec<IpA
     let mut found = Vec::new();
     for task in tasks {
         if let Ok(Some(address)) = task.await {
-            found.push(address);
+            if is_private_lan(&address) {
+                found.push(address);
+            }
         }
     }
 

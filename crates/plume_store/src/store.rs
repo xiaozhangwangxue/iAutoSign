@@ -26,6 +26,11 @@ pub struct AccountStore {
     locale: Option<String>, // None = system locale
     #[serde(default = "default_refresh_days_before")]
     refresh_days_before: u32, // Renew this many days before expiry
+    /// Whether the user wants the "remote pairing" flow when installing pairing
+    /// files. Kept here so the choice survives leaving the tools screen and
+    /// restarting the application.
+    #[serde(default)]
+    remote_pairing: bool,
     #[serde(skip)]
     path: Option<PathBuf>,
 }
@@ -38,6 +43,7 @@ impl Default for AccountStore {
             refreshes: HashMap::new(),
             locale: None,
             refresh_days_before: DEFAULT_REFRESH_DAYS_BEFORE,
+            remote_pairing: false,
             path: None,
         }
     }
@@ -184,6 +190,15 @@ impl AccountStore {
 
     pub fn set_refresh_days_before_sync(&mut self, days: u32) -> Result<(), Error> {
         self.refresh_days_before = days.clamp(1, 6);
+        self.save_sync()
+    }
+
+    pub fn remote_pairing(&self) -> bool {
+        self.remote_pairing
+    }
+
+    pub fn set_remote_pairing_sync(&mut self, enabled: bool) -> Result<(), Error> {
+        self.remote_pairing = enabled;
         self.save_sync()
     }
 

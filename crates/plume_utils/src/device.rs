@@ -95,6 +95,14 @@ impl Device {
             candidates.push(address);
         }
 
+        // Apple's advert does not always carry the UDID (and the phone may use
+        // a private Wi-Fi address, so the name cannot be matched either), so
+        // treat every Apple device on this network as a candidate and verify
+        // the identity after connecting.
+        for address in crate::network::discover_all_addresses(std::time::Duration::from_secs(5)) {
+            candidates.push(address);
+        }
+
         if let Some(mac) = wifi_mac {
             if let Some(address) = crate::network::arp_address_for_mac(mac) {
                 log::info!("{udid} is in the ARP table at {address}");
@@ -114,6 +122,9 @@ impl Device {
             }
             candidates.extend(found);
         }
+
+        candidates.retain(crate::network::is_private_lan);
+        candidates.dedup();
 
         let mut last_error = None;
 

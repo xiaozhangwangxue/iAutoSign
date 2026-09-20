@@ -155,6 +155,18 @@ impl Impactor {
         AccountStore::load_sync(&Some(path)).unwrap_or_default()
     }
 
+    /// Builds the tools screen, restoring the stored preferences (the remote
+    /// pairing switch used to reset whenever the screen was rebuilt).
+    fn build_utilities_screen(&self) -> utilties::UtilitiesScreen {
+        let remote_pairing = self
+            .account_store
+            .as_ref()
+            .map(|store| store.remote_pairing())
+            .unwrap_or(false);
+
+        utilties::UtilitiesScreen::new(self.selected_device.clone(), remote_pairing)
+    }
+
     fn respond_to_next_certificate_reset(&mut self, accepted: bool) {
         if let Some(request) = self.certificate_reset_queue.pop_front() {
             request.respond(accepted);
@@ -182,7 +194,7 @@ impl Impactor {
                         _ => false,
                     };
                     self.current_screen = ImpactorScreen::Utilities(
-                        utilties::UtilitiesScreen::new(self.selected_device.clone()),
+                        self.build_utilities_screen(),
                     );
                     return Task::done(Message::UtilitiesScreen(utilties::Message::RefreshApps(
                         rppairing_enabled,
@@ -212,7 +224,7 @@ impl Impactor {
                         _ => false,
                     };
                     self.current_screen = ImpactorScreen::Utilities(
-                        utilties::UtilitiesScreen::new(self.selected_device.clone()),
+                        self.build_utilities_screen(),
                     );
                     return Task::done(Message::UtilitiesScreen(utilties::Message::RefreshApps(
                         rppairing_enabled,
@@ -246,7 +258,7 @@ impl Impactor {
                         _ => false,
                     };
                     self.current_screen = ImpactorScreen::Utilities(
-                        utilties::UtilitiesScreen::new(self.selected_device.clone()),
+                        self.build_utilities_screen(),
                     );
                     return Task::done(Message::UtilitiesScreen(utilties::Message::RefreshApps(
                         rppairing_enabled,
@@ -455,7 +467,7 @@ impl Impactor {
                             _ => false,
                         };
                         self.current_screen = ImpactorScreen::Utilities(
-                            utilties::UtilitiesScreen::new(self.selected_device.clone()),
+                            self.build_utilities_screen(),
                         );
                         return Task::done(Message::UtilitiesScreen(
                             utilties::Message::RefreshApps(rppairing_enabled),
@@ -468,6 +480,16 @@ impl Impactor {
                 }
             }
             Message::UtilitiesScreen(msg) => {
+                // Remember the remote pairing switch, otherwise it would reset
+                // every time this screen is rebuilt.
+                if let utilties::Message::ToggleRPPairing(enabled) = &msg {
+                    if let Some(store) = &mut self.account_store {
+                        if let Err(err) = store.set_remote_pairing_sync(*enabled) {
+                            log::error!("Failed to persist remote pairing setting: {err}");
+                        }
+                    }
+                }
+
                 if let ImpactorScreen::Utilities(ref mut screen) = self.current_screen {
                     screen.update(msg).map(Message::UtilitiesScreen)
                 } else {
@@ -1011,9 +1033,8 @@ impl Impactor {
                 self.current_screen = ImpactorScreen::Main(general::GeneralScreen::new());
             }
             ImpactorScreenType::Utilities => {
-                self.current_screen = ImpactorScreen::Utilities(utilties::UtilitiesScreen::new(
-                    self.selected_device.clone(),
-                ));
+                self.current_screen =
+                    ImpactorScreen::Utilities(self.build_utilities_screen());
             }
             ImpactorScreenType::Settings => {
                 self.current_screen = ImpactorScreen::Settings(settings::SettingsScreen::new());

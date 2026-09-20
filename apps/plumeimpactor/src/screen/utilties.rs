@@ -61,7 +61,9 @@ pub struct UtilitiesScreen {
 }
 
 impl UtilitiesScreen {
-    pub fn new(device: Option<Device>) -> Self {
+    /// `remote_pairing` comes from the stored settings so the switch keeps its
+    /// value when leaving and re-entering the tools screen (and after a restart).
+    pub fn new(device: Option<Device>, remote_pairing: bool) -> Self {
         let mut screen = Self {
             device,
             installed_apps: Vec::new(),
@@ -69,7 +71,7 @@ impl UtilitiesScreen {
             app_statuses: HashMap::new(),
             loading: false,
             trust_loading: false,
-            rppairing_enabled: false,
+            rppairing_enabled: remote_pairing,
         };
 
         if screen.device.as_ref().map(|d| d.is_mac).unwrap_or(false) {
