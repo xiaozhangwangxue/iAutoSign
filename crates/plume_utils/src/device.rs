@@ -304,6 +304,36 @@ impl Device {
         Ok(())
     }
 
+    /// Fully prepares the phone for wireless use.
+    ///
+    /// * pairs the phone when there is no pairing record yet - iOS then shows
+    ///   its "Trust This Computer?" prompt, which is the one thing only the
+    ///   user can confirm - and
+    /// * switches wireless sync on, so the phone starts advertising itself on
+    ///   the local network and AutoSign can reach it after unplugging.
+    pub async fn prepare_wireless(&self) -> Result<(), Error> {
+        let mut usbmuxd = UsbmuxdConnection::default().await?;
+
+        if usbmuxd.get_pair_record(&self.udid).await.is_err() {
+            log::info!(
+                "No pairing record for {} yet; pairing now (the phone will ask to trust this computer)",
+                self.udid
+            );
+            self.pair().await?;
+        }
+
+        self.enable_wireless_connections().await
+    }
+
+    /// Confirms that the phone can be reached over Wi-Fi and returns how.
+    pub async fn verify_wireless(&self) -> Result<IpAddr, Error> {
+        let wireless = Device::connect_over_network(&self.udid).await?;
+
+        wireless
+            .network_address
+            .ok_or_else(|| Error::Other("no wireless address".to_string()))
+    }
+
     pub async fn install_remote_pairing_record(
         &self,
         identifier: &String,

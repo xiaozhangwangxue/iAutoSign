@@ -119,17 +119,51 @@ fn prepare_wireless_refresh(device: Device) {
             return;
         }
 
-        match device.enable_wireless_connections().await {
-            Ok(()) => log::info!(
-                "Wi-Fi renewals enabled for {} ({})",
-                device.name,
-                device.udid
-            ),
-            Err(e) => log::warn!(
-                "Could not enable Wi-Fi renewals for {} yet: {e}",
-                device.udid
-            ),
+        // Pairing (if needed) and enabling wireless sync. iOS only asks the
+        // user to trust the computer once; after that everything happens
+        // automatically.
+        match device.prepare_wireless().await {
+            Ok(()) => {
+                log::info!(
+                    "Wi-Fi renewals enabled for {} ({})",
+                    device.name,
+                    device.udid
+                );
+            }
+            Err(e) => {
+                log::warn!(
+                    "Could not enable Wi-Fi renewals for {} yet: {e}",
+                    device.udid
+                );
+                return;
+            }
         }
+
+        // Verify the wireless path straight away, while the cable is still
+        // connected: the phone starts advertising itself over mDNS as soon as
+        // wireless sync is on. This turns "does it work after unplugging?" into
+        // an immediate, visible answer in the log.
+        for attempt in 1..=4 {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+
+            match device.verify_wireless().await {
+                Ok(address) => {
+                    log::info!(
+                        "Wi-Fi connection verified at {address} - renewals will work without the cable"
+                    );
+                    return;
+                }
+                Err(err) => {
+                    log::warn!("Wi-Fi check {attempt}/4 for {} failed: {err}", device.udid);
+                }
+            }
+        }
+
+        log::warn!(
+            "{} is paired and wireless sync is on, but it could not be reached over Wi-Fi yet; \
+             make sure the phone is unlocked and on the same network",
+            device.udid
+        );
     });
 }
 
