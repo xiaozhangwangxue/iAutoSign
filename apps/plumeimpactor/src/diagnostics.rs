@@ -74,7 +74,13 @@ pub fn install_drivers_elevated() -> Result<(), String> {
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
     let script = driver_script().ok_or("deps.ps1 未找到（请重新运行安装包）")?;
-    let log_path = std::env::temp_dir().join("autosign-deps.log");
+
+    // Same log location the installer uses, so the user always finds one file.
+    let log_path = std::env::var("ProgramData")
+        .map(|base| std::path::PathBuf::from(base).join("AutoSign").join("logs"))
+        .unwrap_or_else(|_| std::env::temp_dir());
+    let _ = std::fs::create_dir_all(&log_path);
+    let log_path = log_path.join("deps-install.log");
 
     // The installer ships Apple's packages next to the application, which lets
     // the repair work without internet access.

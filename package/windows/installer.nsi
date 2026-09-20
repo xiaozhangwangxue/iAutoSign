@@ -47,6 +47,10 @@ ShowUninstDetails show
 !define MUI_ICON "icon.ico"
 !define MUI_UNICON "icon.ico"
 
+; Used by the dependency section below to write a log the user can find.
+Var DLogPath
+Var DLogText
+
 !define MUI_WELCOMEPAGE_TITLE "$(welcomeTitle)"
 !define MUI_WELCOMEPAGE_TEXT "$(welcomeText)"
 !insertmacro MUI_PAGE_WELCOME
@@ -94,8 +98,8 @@ LangString depsInstalling ${LANG_SIMPCHINESE} "正在安装 Apple 驱动与组�
 LangString depsInstalling ${LANG_ENGLISH} "Installing Apple device drivers (internet connection required, this may take a few minutes)..."
 LangString depsOk ${LANG_SIMPCHINESE} "Apple 驱动已就绪。"
 LangString depsOk ${LANG_ENGLISH} "Apple device drivers are ready."
-LangString depsFailed ${LANG_SIMPCHINESE} "自动安装 Apple 驱动未成功。$\r$\n$\r$\n可以手动安装 iTunes 解决：https://www.apple.com/itunes/download/win64 $\r$\n装完后打开 AutoSign 即可；也可以在 AutoSign 的“设置”里点『安装/修复 Apple 驱动』重试。$\r$\n$\r$\n详细日志（发我排查用）：%TEMP%\autosign-deps.log"
-LangString depsFailed ${LANG_ENGLISH} "Automatic driver installation did not succeed.$\r$\n$\r$\nInstall iTunes manually to fix it: https://www.apple.com/itunes/download/win64 $\r$\nYou can also retry from AutoSign (Settings -> Install / repair Apple drivers).$\r$\n$\r$\nLog for troubleshooting: %TEMP%\autosign-deps.log"
+LangString depsFailed ${LANG_SIMPCHINESE} "自动安装 Apple 驱动未成功。$\r$\n$\r$\n我已经把安装日志复制到你的桌面并打开了它（文件名：AutoSign-驱动安装日志.txt），请把内容发给我，我按里面的错误码继续修。$\r$\n$\r$\n想立刻能用的替代办法：手动安装 iTunes（https://www.apple.com/itunes/download/win64），装完后打开 AutoSign 即可正常识别手机。"
+LangString depsFailed ${LANG_ENGLISH} "Automatic driver installation did not succeed.$\r$\n$\r$\nThe log was copied to your desktop and opened (AutoSign-驱动安装日志.txt) - please send it to me so I can fix the exact error.$\r$\n$\r$\nQuick workaround: install iTunes manually (https://www.apple.com/itunes/download/win64), then start AutoSign as usual."
 
 LangString finishRun ${LANG_SIMPCHINESE} "立即运行 自动签名助手"
 LangString finishRun ${LANG_ENGLISH} "Run AutoSign now"
@@ -171,6 +175,30 @@ SectionEnd
 Section "$(secDeps)" SecDeps
     DetailPrint "$(depsChecking)"
 
+    ; Log everything to a place that is easy to find; when something fails the
+    ; installer also copies it to the desktop and opens it automatically.
+    ; $APPDATA under the "all users" context is C:\ProgramData - a fixed place
+    ; that does not depend on which account ran the installer.
+    SetShellVarContext all
+    StrCpy $DLogPath "$APPDATA\AutoSign\logs\deps-install.log"
+    CreateDirectory "$APPDATA\AutoSign"
+    CreateDirectory "$APPDATA\AutoSign\logs"
+    SetShellVarContext current
+
+    FileOpen $9 "$DLogPath" w
+    FileWrite $9 "AutoSign driver installation log$\r$\n"
+    FileWrite $9 "=================================$\r$\n"
+    FileWrite $9 "Windows directory : $WINDIR$\r$\n"
+    FileWrite $9 "Installer temp    : $TEMP$\r$\n"
+    FileWrite $9 "Install directory : $INSTDIR$\r$\n"
+    IfFileExists "$INSTDIR\drivers\AppleMobileDeviceSupport64.msi" 0 deps_log_no_bundle
+        FileWrite $9 "Bundled driver    : found$\r$\n"
+        Goto deps_log_bundle_done
+    deps_log_no_bundle:
+        FileWrite $9 "Bundled driver    : MISSING$\r$\n"
+    deps_log_bundle_done:
+    FileClose $9
+
     ; $3 = result: 0 = failed, 1 = ready
     StrCpy $3 "0"
 
@@ -180,14 +208,34 @@ Section "$(secDeps)" SecDeps
     ReadRegStr $1 HKLM "SYSTEM\CurrentControlSet\Services\AppleMobileDeviceService" "ImagePath"
     StrCmp $0 "" 0 deps_already
     StrCmp $1 "" 0 deps_already
-    Goto deps_install
 
-    deps_already:
-        StrCpy $3 "1"
-        Goto deps_report
-
-    deps_install:
+    ;---------------------------------------------------------
+    ; Step 1: install Apple's package that ships inside AutoSign.
+    ; Needs neither PowerShell nor internet access.
+    ;---------------------------------------------------------
+    IfFileExists "$INSTDIR\drivers\AppleMobileDeviceSupport64.msi" 0 deps_powershell
         DetailPrint "$(depsInstalling)"
+        StrCpy $DLogText "step 1: msiexec /i bundled AppleMobileDeviceSupport64.msi"
+        Call LogAppend
+        StrCpy $8 "msiexec /i $\"$INSTDIR\drivers\AppleMobileDeviceSupport64.msi$\" /qn /norestart"
+        nsExec::ExecToStack '$8'
+        Pop $2
+        Pop $4
+        StrCpy $DLogText "step 1: msiexec exit code $2 | $4"
+        Call LogAppend
+        Sleep 3000
+
+        ReadRegStr $0 HKLM "SYSTEM\CurrentControlSet\Services\Apple Mobile Device Service" "ImagePath"
+        ReadRegStr $1 HKLM "SYSTEM\CurrentControlSet\Services\AppleMobileDeviceService" "ImagePath"
+        StrCmp $0 "" 0 deps_already
+        StrCmp $1 "" 0 deps_already
+
+    ;---------------------------------------------------------
+    ; Step 2: the helper script (handles the online fallbacks too).
+    ;---------------------------------------------------------
+    deps_powershell:
+        StrCpy $DLogText "step 2: running deps.ps1"
+        Call LogAppend
         SetOutPath "$PLUGINSDIR"
         File "deps.ps1"
         SetOutPath "$INSTDIR"
@@ -196,9 +244,28 @@ Section "$(secDeps)" SecDeps
         Delete "$TEMP\autosign-deps-ok.txt"
         Delete "$TEMP\autosign-deps-failed.txt"
 
-        nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\deps.ps1" -LogPath "$TEMP\autosign-deps.log" -BundleDir "$INSTDIR\drivers"'
+        StrCpy $8 "$\"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe$\" -NoProfile -ExecutionPolicy Bypass -File $\"$PLUGINSDIR\deps.ps1$\" -LogPath $\"$DLogPath$\" -BundleDir $\"$INSTDIR\drivers$\""
+        nsExec::ExecToStack '$8'
         Pop $2
+        Pop $4
+        StrCpy $DLogText "step 2: powershell -File exit code $2 | $4"
+        Call LogAppend
 
+        ; Some PCs block script files through group policy; retry inline.
+        IfFileExists "$TEMP\autosign-deps-ok.txt" deps_verify_registry
+        IfFileExists "$TEMP\autosign-deps-failed.txt" deps_verify_registry
+
+        StrCpy $DLogText "step 3: no result marker, retrying with powershell -Command"
+        Call LogAppend
+        StrCpy $8 "$\"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe$\" -NoProfile -ExecutionPolicy Bypass -Command $\"& '$PLUGINSDIR\deps.ps1' -LogPath '$DLogPath' -BundleDir '$INSTDIR\drivers'$\""
+        nsExec::ExecToStack '$8'
+        Pop $2
+        Pop $4
+        StrCpy $DLogText "step 3: powershell -Command exit code $2 | $4"
+        Call LogAppend
+        Sleep 2000
+
+    deps_verify_registry:
         IfFileExists "$TEMP\autosign-deps-ok.txt" 0 deps_check_failed_marker
             StrCpy $3 "1"
             Goto deps_registry_check
@@ -215,20 +282,37 @@ Section "$(secDeps)" SecDeps
         StrCmp $1 "" 0 deps_mark_ok
         Goto deps_report
 
+    deps_already:
+        StrCpy $3 "1"
+
     deps_mark_ok:
         StrCpy $3 "1"
 
     deps_report:
         StrCmp $3 "1" 0 deps_failed
+        StrCpy $DLogText "result: SUCCESS"
+        Call LogAppend
         DetailPrint "$(depsOk)"
         Goto deps_done
 
     deps_failed:
+        StrCpy $DLogText "result: FAILED - the device service is still missing"
+        Call LogAppend
+
+        ; Put the log where the user can find it, then open it for them.
+        CopyFiles /SILENT "$DLogPath" "$DESKTOP\AutoSign-驱动安装日志.txt"
         DetailPrint "$(depsFailed)"
         MessageBox MB_ICONEXCLAMATION|MB_OK "$(depsFailed)"
+        ExecShell "open" "$DESKTOP\AutoSign-驱动安装日志.txt"
 
     deps_done:
 SectionEnd
+
+Function LogAppend
+    FileOpen $9 "$DLogPath" a
+    FileWrite $9 "$DLogText$\r$\n"
+    FileClose $9
+FunctionEnd
 
 Section "$(secAutoStart)" SecAutoStart
     WriteRegStr HKCU "${RUN_KEY}" "${RUN_VALUE}" '"$INSTDIR\${APPEXE}" --tray'

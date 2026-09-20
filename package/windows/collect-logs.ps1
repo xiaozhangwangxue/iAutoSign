@@ -9,7 +9,10 @@
 $ErrorActionPreference = "Continue"
 
 $dataDir = Join-Path $env:APPDATA "AutoSign"
-$depsLog = Join-Path $env:TEMP "autosign-deps.log"
+$depsLogs = @(
+    (Join-Path $env:ProgramData "AutoSign\logs\deps-install.log"),
+    (Join-Path $env:TEMP "autosign-deps.log")
+)
 $desktop = [Environment]::GetFolderPath("Desktop")
 $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $zipPath = Join-Path $desktop "AutoSign-logs-$stamp.zip"
@@ -25,11 +28,12 @@ if (Test-Path $exe) {
 }
 
 $collected = 0
-foreach ($file in @(
-        (Join-Path $dataDir "autosign.log"),
-        (Join-Path $dataDir "selfcheck.txt"),
-        $depsLog
-    )) {
+$files = @(
+    (Join-Path $dataDir "autosign.log"),
+    (Join-Path $dataDir "selfcheck.txt")
+) + $depsLogs
+
+foreach ($file in $files) {
     if (Test-Path $file) {
         Copy-Item $file -Destination $staging -Force
         $collected++

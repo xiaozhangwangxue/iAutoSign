@@ -28,6 +28,13 @@ try {
     # Older PowerShell versions may not expose the enum member.
 }
 
+# Make sure the log directory exists before the first Write-Log call, otherwise
+# nothing (including the reason for a failure) would be recorded.
+$logDirectory = Split-Path -Parent $LogPath
+if ($logDirectory -and -not (Test-Path $logDirectory)) {
+    New-Item -ItemType Directory -Force -Path $logDirectory -ErrorAction SilentlyContinue | Out-Null
+}
+
 function Write-Log {
     param([string]$Message)
     $line = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $Message"
