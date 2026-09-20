@@ -55,6 +55,13 @@ settings_self_check = "Run self-check"
 settings_self_check_running = "Checking..."
 settings_install_drivers = "Install / repair Apple drivers"
 
+tray_open = "Open"
+tray_auto_refresh = "Auto-Refresh Apps"
+tray_refresh_now = "Refresh Now"
+tray_forget_app = "Forget App"
+tray_quit = "Quit %{app}"
+tray_app_with_next = "%{name} (Next: %{next})"
+
 utilities_loading = "Loading..."
 utilities_refresh_installed_apps = "Refresh Installed Apps"
 utilities_pairing = "Pairing..."

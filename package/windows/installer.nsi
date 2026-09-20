@@ -94,8 +94,8 @@ LangString depsInstalling ${LANG_SIMPCHINESE} "正在安装 Apple 驱动与组�
 LangString depsInstalling ${LANG_ENGLISH} "Installing Apple device drivers (internet connection required, this may take a few minutes)..."
 LangString depsOk ${LANG_SIMPCHINESE} "Apple 驱动已就绪。"
 LangString depsOk ${LANG_ENGLISH} "Apple device drivers are ready."
-LangString depsFailed ${LANG_SIMPCHINESE} "自动安装驱动未成功。你可以稍后在 AutoSign 里点击“安装驱动”重试，或手动安装 iTunes。"
-LangString depsFailed ${LANG_ENGLISH} "Automatic driver installation did not succeed. You can retry from inside AutoSign or install iTunes manually."
+LangString depsFailed ${LANG_SIMPCHINESE} "自动安装 Apple 驱动未成功。$\r$\n$\r$\n可以手动安装 iTunes 解决：https://www.apple.com/itunes/download/win64 $\r$\n装完后打开 AutoSign 即可；也可以在 AutoSign 的“设置”里点『安装/修复 Apple 驱动』重试。$\r$\n$\r$\n详细日志（发我排查用）：%TEMP%\autosign-deps.log"
+LangString depsFailed ${LANG_ENGLISH} "Automatic driver installation did not succeed.$\r$\n$\r$\nInstall iTunes manually to fix it: https://www.apple.com/itunes/download/win64 $\r$\nYou can also retry from AutoSign (Settings -> Install / repair Apple drivers).$\r$\n$\r$\nLog for troubleshooting: %TEMP%\autosign-deps.log"
 
 LangString finishRun ${LANG_SIMPCHINESE} "立即运行 自动签名助手"
 LangString finishRun ${LANG_ENGLISH} "Run AutoSign now"
@@ -113,6 +113,10 @@ LangString only64 ${LANG_ENGLISH} "AutoSign only supports 64-bit Windows 10 / 11
 ; Checks
 ;-----------------------------------------------------------
 Function .onInit
+    ; Always start the wizard in Simplified Chinese (users can still switch on
+    ; the first page if a different language is wanted).
+    StrCpy $LANGUAGE ${LANG_SIMPCHINESE}
+
     ${IfNot} ${RunningX64}
         MessageBox MB_ICONSTOP|MB_OK "$(only64)"
         Abort
@@ -136,6 +140,11 @@ Section "!${APPNAME}" SecMain
     ; what allow signing to work without depending on a remote anisette server.
     SetOutPath "$INSTDIR\libs"
     File /r "libs\*.*"
+
+    ; Apple's own driver packages, shipped so that a PC without internet access
+    ; (or without winget / the Microsoft Store) can still install the drivers.
+    SetOutPath "$INSTDIR\drivers"
+    File /r "drivers\*.*"
     SetOutPath "$INSTDIR"
 
     CreateDirectory "$SMPROGRAMS\${APPNAME_CN}"
@@ -162,27 +171,61 @@ SectionEnd
 Section "$(secDeps)" SecDeps
     DetailPrint "$(depsChecking)"
 
+    ; $3 = result: 0 = failed, 1 = ready
+    StrCpy $3 "0"
+
+    ; Newer Apple installers register "AppleMobileDeviceService", older ones use
+    ; "Apple Mobile Device Service" with spaces - accept both.
     ReadRegStr $0 HKLM "SYSTEM\CurrentControlSet\Services\Apple Mobile Device Service" "ImagePath"
-    ${If} $0 != ""
+    ReadRegStr $1 HKLM "SYSTEM\CurrentControlSet\Services\AppleMobileDeviceService" "ImagePath"
+    StrCmp $0 "" 0 deps_already
+    StrCmp $1 "" 0 deps_already
+    Goto deps_install
+
+    deps_already:
+        StrCpy $3 "1"
+        Goto deps_report
+
+    deps_install:
+        DetailPrint "$(depsInstalling)"
+        SetOutPath "$PLUGINSDIR"
+        File "deps.ps1"
+        SetOutPath "$INSTDIR"
+
+        ; Remove stale markers so an old run cannot be mistaken for this one.
+        Delete "$TEMP\autosign-deps-ok.txt"
+        Delete "$TEMP\autosign-deps-failed.txt"
+
+        nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\deps.ps1" -LogPath "$TEMP\autosign-deps.log" -BundleDir "$INSTDIR\drivers"'
+        Pop $2
+
+        IfFileExists "$TEMP\autosign-deps-ok.txt" 0 deps_check_failed_marker
+            StrCpy $3 "1"
+            Goto deps_registry_check
+
+    deps_check_failed_marker:
+        IfFileExists "$TEMP\autosign-deps-failed.txt" 0 deps_registry_check
+            StrCpy $3 "0"
+
+    deps_registry_check:
+        ; Fall back to the registry in case the helper did not get that far.
+        ReadRegStr $0 HKLM "SYSTEM\CurrentControlSet\Services\Apple Mobile Device Service" "ImagePath"
+        ReadRegStr $1 HKLM "SYSTEM\CurrentControlSet\Services\AppleMobileDeviceService" "ImagePath"
+        StrCmp $0 "" 0 deps_mark_ok
+        StrCmp $1 "" 0 deps_mark_ok
+        Goto deps_report
+
+    deps_mark_ok:
+        StrCpy $3 "1"
+
+    deps_report:
+        StrCmp $3 "1" 0 deps_failed
         DetailPrint "$(depsOk)"
         Goto deps_done
-    ${EndIf}
 
-    DetailPrint "$(depsInstalling)"
-    SetOutPath "$PLUGINSDIR"
-    File "deps.ps1"
-    SetOutPath "$INSTDIR"
-
-    nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\deps.ps1" -LogPath "$TEMP\autosign-deps.log"'
-    Pop $0
-
-    ReadRegStr $1 HKLM "SYSTEM\CurrentControlSet\Services\Apple Mobile Device Service" "ImagePath"
-    ${If} $1 == ""
+    deps_failed:
         DetailPrint "$(depsFailed)"
         MessageBox MB_ICONEXCLAMATION|MB_OK "$(depsFailed)"
-    ${Else}
-        DetailPrint "$(depsOk)"
-    ${EndIf}
 
     deps_done:
 SectionEnd
@@ -216,6 +259,7 @@ Section "Uninstall"
     Delete "$INSTDIR\icon.ico"
     Delete "$INSTDIR\install-drivers.ps1"
     Delete "$INSTDIR\collect-logs.ps1"
+    RMDir /r "$INSTDIR\drivers"
     Delete "$INSTDIR\Uninstall.exe"
     RMDir /r "$INSTDIR\libs"
     RMDir "$INSTDIR"

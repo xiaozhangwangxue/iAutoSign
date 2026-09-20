@@ -133,12 +133,20 @@ pub async fn run_self_check(data_path: PathBuf, anisette_load_result: Option<Str
 /// Builds the PowerShell command that re-runs a script with administrator
 /// rights, quoting the paths so that directories containing spaces (or quotes)
 /// keep working.
-pub fn powershell_elevation_command(script: &Path, log_path: &Path) -> String {
-    let inner = format!(
+pub fn powershell_elevation_command(
+    script: &Path,
+    log_path: &Path,
+    bundle_dir: Option<&Path>,
+) -> String {
+    let mut inner = format!(
         "-NoProfile -ExecutionPolicy Bypass -File \"{}\" -LogPath \"{}\"",
         script.display(),
         log_path.display()
     );
+
+    if let Some(bundle_dir) = bundle_dir {
+        inner.push_str(&format!(" -BundleDir \"{}\"", bundle_dir.display()));
+    }
 
     format!(
         "Start-Process -FilePath 'powershell.exe' -ArgumentList '{}' -Verb RunAs",
@@ -199,6 +207,7 @@ mod tests {
         let command = powershell_elevation_command(
             Path::new(r"C:\Program Files\AutoSign\install-drivers.ps1"),
             Path::new(r"C:\Users\Some User\AppData\Local\Temp\autosign-deps.log"),
+            None,
         );
 
         assert!(command.contains("-Verb RunAs"), "{command}");
@@ -217,10 +226,25 @@ mod tests {
         let command = powershell_elevation_command(
             Path::new(r"C:\Users\O'Brien\AutoSign\install-drivers.ps1"),
             Path::new(r"C:\Temp\autosign-deps.log"),
+            None,
         );
 
         // A lone quote would terminate the argument list early.
         assert!(command.contains("O''Brien"), "{command}");
         assert_eq!(command.matches("-Verb RunAs").count(), 1, "{command}");
+    }
+
+    #[test]
+    fn elevation_command_includes_bundled_driver_folder() {
+        let command = powershell_elevation_command(
+            Path::new(r"C:\Program Files\AutoSign\install-drivers.ps1"),
+            Path::new(r"C:\Temp\autosign-deps.log"),
+            Some(Path::new(r"C:\Program Files\AutoSign\drivers")),
+        );
+
+        assert!(
+            command.contains(r#"-BundleDir "C:\Program Files\AutoSign\drivers""#),
+            "{command}"
+        );
     }
 }

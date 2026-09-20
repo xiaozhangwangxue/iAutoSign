@@ -55,6 +55,13 @@ settings_self_check = "运行环境自检"
 settings_self_check_running = "自检中…"
 settings_install_drivers = "安装/修复 Apple 驱动"
 
+tray_open = "打开主界面"
+tray_auto_refresh = "自动续签的 App"
+tray_refresh_now = "立即续签"
+tray_forget_app = "不再自动续签"
+tray_quit = "退出 %{app}"
+tray_app_with_next = "%{name}（下次续签：%{next}）"
+
 utilities_loading = "加载中..."
 utilities_refresh_installed_apps = "刷新已安装应用"
 utilities_pairing = "配对中..."

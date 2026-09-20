@@ -76,7 +76,18 @@ pub fn install_drivers_elevated() -> Result<(), String> {
     let script = driver_script().ok_or("deps.ps1 未找到（请重新运行安装包）")?;
     let log_path = std::env::temp_dir().join("autosign-deps.log");
 
-    let command = plume_utils::diagnostics::powershell_elevation_command(&script, &log_path);
+    // The installer ships Apple's packages next to the application, which lets
+    // the repair work without internet access.
+    let bundle_dir = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|parent| parent.join("drivers")))
+        .filter(|directory| directory.exists());
+
+    let command = plume_utils::diagnostics::powershell_elevation_command(
+        &script,
+        &log_path,
+        bundle_dir.as_deref(),
+    );
 
     log::info!("Requesting elevated driver installation via: {command}");
 

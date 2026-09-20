@@ -33,6 +33,11 @@ cp "target/$TARGET/release/plumeimpactor.exe" dist/nsis/AutoSign.exe
 cp "target/$TARGET/release/plumesign.exe" "dist/AutoSign-$VERSION-windows-x64-cli.exe"
 cp package/windows/installer.nsi package/windows/deps.ps1 package/windows/icon.ico dist/nsis/
 cp -r package/windows/libs dist/nsis/libs
+
+# Apple's driver packages, so the installer can set up a PC without internet.
+if [ -d package/windows/drivers ]; then
+    cp -r package/windows/drivers dist/nsis/drivers
+fi
 cp "target/$TARGET/release/plumeimpactor.exe" "dist/AutoSign-$VERSION-windows-x64-portable.exe"
 mkdir -p dist/portable
 cp "target/$TARGET/release/plumeimpactor.exe" "dist/portable/AutoSign.exe"

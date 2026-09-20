@@ -10,8 +10,9 @@ Wi-Fi 自动续签与若干已知问题做了修改。
 
 ## 和 Sideloadly 相比做了什么
 
-* **安装即用**：安装包会检测并自动安装 Apple 手机驱动（Apple Mobile Device
-  Support）与 Bonjour，不必先自己装 iTunes。
+* **安装即用（离线也算）**：安装包内置了 Apple 官方的驱动组件
+  （`AppleMobileDeviceSupport64.msi`），安装时直接本地装好——不需要联网、
+  不需要 winget、不需要微软商店，也不用先装 iTunes；Bonjour 缺失时会尽力补装。
 * **本地 anisette**：优先在本地生成 Apple 的设备身份数据（omnisette + Apple
   Music 的 Android 库），不再依赖第三方 anisette 服务器；服务器不可用时才会回退。
 * **自动续签**：

@@ -3,6 +3,7 @@ mod cgbi;
 pub mod diagnostics;
 mod device;
 pub mod errors;
+pub mod locale;
 mod options;
 mod package;
 mod signer;

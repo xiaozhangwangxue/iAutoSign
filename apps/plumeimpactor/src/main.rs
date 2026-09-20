@@ -77,10 +77,16 @@ fn main() -> iced::Result {
         .install_default()
         .ok();
 
-    if let Ok(locale) = current_locale::current_locale() {
-        log::info!("Setting locale to {locale}...");
-        rust_i18n::set_locale(&locale);
-    }
+    // Default to Simplified Chinese; the settings screen stores an explicit
+    // choice which is applied later (and overrides this).
+    let system_locale = current_locale::current_locale().unwrap_or_default();
+    let locale = plume_utils::locale::normalize_locale(
+        &system_locale,
+        rust_i18n::available_locales!(),
+        plume_utils::locale::FALLBACK_LOCALE,
+    );
+    log::info!("System locale {system_locale:?} -> using {locale}");
+    rust_i18n::set_locale(&locale);
 
     #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
     let _single_instance = match SingleInstance::new(&crate::relaunch::single_instance_key()) {

@@ -580,10 +580,20 @@ impl Impactor {
                         }
                         settings::Message::SelectLocale(choice) => {
                             self.selected_locale = choice.clone();
-                            let effective = choice
-                                .clone()
-                                .or_else(|| current_locale::current_locale().ok())
-                                .unwrap_or_else(|| "en".to_string());
+                            // "System" means: follow the system locale, normalised
+                            // onto the locale files we actually ship (and Chinese
+                            // by default, matching the app's default language).
+                            let effective = match &choice {
+                                Some(code) => code.clone(),
+                                None => {
+                                    let system = current_locale::current_locale().unwrap_or_default();
+                                    plume_utils::locale::normalize_locale(
+                                        &system,
+                                        rust_i18n::available_locales!(),
+                                        plume_utils::locale::FALLBACK_LOCALE,
+                                    )
+                                }
+                            };
                             rust_i18n::set_locale(&effective);
                             if let Some(store) = &mut self.account_store {
                                 if let Err(err) = store.set_locale_sync(choice) {

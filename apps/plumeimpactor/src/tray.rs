@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use rust_i18n::t;
 use tray_icon::{
     Icon, TrayIcon, TrayIconBuilder,
     menu::{Menu, MenuId, MenuItem, PredefinedMenuItem, Submenu},
@@ -46,8 +47,8 @@ pub(crate) struct ImpactorTray {
 impl ImpactorTray {
     pub(crate) fn new() -> Self {
         let tray_menu = Menu::new();
-        let show_item = MenuItem::new("Open", true, None);
-        let quit_item = MenuItem::new(format!("Quit {}", crate::APP_NAME), true, None);
+        let show_item = MenuItem::new(&t!("tray_open"), true, None);
+        let quit_item = MenuItem::new(&t!("tray_quit", app = crate::APP_NAME), true, None);
 
         let show_item_id = show_item.id().clone();
         let quit_item_id = quit_item.id().clone();
@@ -69,7 +70,7 @@ impl ImpactorTray {
 
     pub(crate) fn update_refresh_apps(&mut self, store: &plume_store::AccountStore) {
         let new_menu = Menu::new();
-        let show_item = MenuItem::new("Open", true, None);
+        let show_item = MenuItem::new(&t!("tray_open"), true, None);
 
         let mut action_map = HashMap::new();
         action_map.insert(show_item.id().clone(), TrayAction::Show);
@@ -80,7 +81,7 @@ impl ImpactorTray {
         let has_apps = store.refreshes().values().any(|d| !d.apps.is_empty());
 
         if has_apps {
-            let refresh_submenu = Submenu::new("Auto-Refresh Apps", true);
+            let refresh_submenu = Submenu::new(&t!("tray_auto_refresh"), true);
 
             for (udid, refresh_device) in store.refreshes() {
                 if refresh_device.apps.is_empty() {
@@ -99,16 +100,16 @@ impl ImpactorTray {
                     let scheduled = app.scheduled_refresh.format("%H:%M %b %d").to_string();
 
                     let app_submenu = Submenu::new(
-                        &format!(
-                            "{} (Next: {})",
-                            app.name.clone().unwrap_or("???".to_string()),
-                            scheduled
+                        &t!(
+                            "tray_app_with_next",
+                            name = app.name.clone().unwrap_or("???".to_string()),
+                            next = scheduled
                         ),
                         true,
                     );
 
-                    let refresh_item = MenuItem::new("Refresh Now", true, None);
-                    let forget_item = MenuItem::new("Forget App", true, None);
+                    let refresh_item = MenuItem::new(&t!("tray_refresh_now"), true, None);
+                    let forget_item = MenuItem::new(&t!("tray_forget_app"), true, None);
 
                     action_map.insert(
                         refresh_item.id().clone(),
@@ -138,7 +139,7 @@ impl ImpactorTray {
             let _ = new_menu.append(&PredefinedMenuItem::separator());
         }
 
-        let quit_item = MenuItem::new(format!("Quit {}", crate::APP_NAME), true, None);
+        let quit_item = MenuItem::new(&t!("tray_quit", app = crate::APP_NAME), true, None);
         action_map.insert(quit_item.id().clone(), TrayAction::Quit);
         let _ = new_menu.append(&quit_item);
 
