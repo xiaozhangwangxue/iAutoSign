@@ -629,6 +629,10 @@ pub(crate) async fn run_installation(
                         name: package_file.get_name(),
                         bundle_id: package_file.get_bundle_identifier(),
                         path: dest_path.clone(),
+                        // Remember which Apple ID this app was signed with, so
+                        // renewals keep using the right one even when several
+                        // accounts are used on the same phone.
+                        account: Some(account.email().clone()),
                         scheduled_refresh,
                     };
 

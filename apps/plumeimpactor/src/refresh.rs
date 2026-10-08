@@ -355,9 +355,22 @@ impl RefreshDaemon {
             .show()
             .ok();
 
+        // Apps remember the Apple ID they were signed with; fall back to the
+        // device's account for entries created by older versions.
+        let account_email = app
+            .account
+            .clone()
+            .unwrap_or_else(|| refresh_device.account.clone());
+
         let account = store
-            .get_account(&refresh_device.account)
-            .ok_or_else(|| format!("Account {} not found", refresh_device.account))?;
+            .get_account(&account_email)
+            .ok_or_else(|| format!("Account {account_email} not found"))?;
+
+        log::info!(
+            "Renewing {} for {} using Apple ID {account_email}",
+            app.name.as_deref().unwrap_or("?"),
+            device.name
+        );
 
         let session = DeveloperSession::new(
             account.adsid().clone(),

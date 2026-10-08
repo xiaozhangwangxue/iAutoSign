@@ -20,6 +20,13 @@ pub struct RefreshApp {
     pub name: Option<String>,
     #[serde(default)]
     pub bundle_id: Option<String>,
+    /// Apple ID used to sign this app.
+    ///
+    /// Kept per app (instead of only per device) so that several Apple IDs can
+    /// be used on one phone - each free Apple ID may only have three apps
+    /// signed at a time, which is the usual reason for using more than one.
+    #[serde(default)]
+    pub account: Option<String>,
     pub scheduled_refresh: DateTime<Utc>, // the scheduled refresh time will happen a day before expiration
 }
 
