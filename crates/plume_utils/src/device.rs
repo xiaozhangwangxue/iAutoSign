@@ -191,6 +191,20 @@ impl Device {
         (!mac.is_empty()).then_some(mac)
     }
 
+    /// Placeholder device that represents "this Mac" when signing apps for the
+    /// local machine (Apple Silicon only).
+    pub fn local_mac(name: impl Into<String>, udid: impl Into<String>, device_id: u32) -> Self {
+        Device {
+            name: name.into(),
+            udid: udid.into(),
+            device_id,
+            usbmuxd_device: None,
+            network_address: None,
+            pairing_file: None,
+            is_mac: true,
+        }
+    }
+
     /// Provider for whichever transport this device is reachable through:
     /// Apple's device service for USB (and discovered Wi-Fi) devices, or a
     /// direct TCP connection for phones found on the local network.

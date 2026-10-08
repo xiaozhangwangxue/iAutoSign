@@ -124,14 +124,7 @@ pub async fn execute(args: SignArgs) -> Result<()> {
             if args.mac {
                 use plume_utils::Device;
 
-                Some(Device {
-                    name: "My Mac".to_string(),
-                    udid: String::new(),
-                    device_id: 0,
-                    usbmuxd_device: None,
-                    network_address: None,
-                    is_mac: true,
-                })
+                Some(Device::local_mac("My Mac", String::new(), 0))
             } else {
                 Some(select_device(args.udid).await?)
             }

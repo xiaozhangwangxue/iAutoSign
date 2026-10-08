@@ -50,14 +50,7 @@ pub async fn execute(args: DeviceArgs) -> Result<()> {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
             if args.mac {
-                Device {
-                    name: "My Mac".to_string(),
-                    udid: String::new(),
-                    device_id: 0,
-                    usbmuxd_device: None,
-                    network_address: None,
-                    is_mac: true,
-                }
+                Device::local_mac("My Mac", String::new(), 0)
             } else {
                 select_device(args.udid).await?
             }

@@ -28,14 +28,9 @@ pub(crate) fn device_listener() -> Subscription<Message> {
                         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                         {
                             if let Some(mac_udid) = plume_gestalt::get_udid() {
-                                let _ = tx.unbounded_send(Message::DeviceConnected(Device {
-                                    name: "This Mac".into(),
-                                    udid: mac_udid,
-                                    device_id: u32::MAX,
-                                    usbmuxd_device: None,
-                                    network_address: None,
-                                    is_mac: true,
-                                }));
+                                let _ = tx.unbounded_send(Message::DeviceConnected(
+                                    Device::local_mac("This Mac", mac_udid, u32::MAX),
+                                ));
                             }
                         }
 
