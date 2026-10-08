@@ -13,7 +13,7 @@ use iced::window;
 use iced::{Element, Subscription, Task};
 
 use plume_store::AccountStore;
-use plume_utils::{Device, SignerOptions};
+use plume_utils::{Device, PlistInfoTrait, SignerOptions};
 
 use crate::subscriptions;
 use crate::tray::ImpactorTray;
@@ -1057,7 +1057,16 @@ impl Impactor {
             let account = self
                 .account_store
                 .as_ref()
-                .and_then(|s| s.selected_account().cloned());
+                .and_then(|store| {
+                    // Spread apps over all added Apple IDs automatically: each
+                    // free account may only sign three apps at a time.
+                    let bundle_id = installer
+                        .selected_package
+                        .as_ref()
+                        .and_then(|package| package.get_bundle_identifier());
+
+                    store.account_for_new_app(bundle_id.as_deref())
+                });
             let mut store = self.account_store.clone();
 
             let (tx, rx) = std::sync::mpsc::channel();

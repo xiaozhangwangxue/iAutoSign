@@ -13,6 +13,7 @@ repository.workspace = true
 # relying on feature unification with the GUI application.
 tokio = { workspace = true, features = ["fs"] }
 chrono.workspace = true
+log.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 plume_core = { path = "../plume_core", features = ["tweaks"] }

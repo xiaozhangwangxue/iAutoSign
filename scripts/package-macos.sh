@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+#
+# Builds the macOS (Apple Silicon) release of AutoSign and packages it as a DMG.
+#
+# The application is ad-hoc signed: it runs, but Gatekeeper will still ask the
+# user to confirm the first launch (right-click -> Open, or
+# `xattr -dr com.apple.quarantine /Applications/AutoSign.app`).
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+TARGET="aarch64-apple-darwin"
+VERSION="$(awk '/\[workspace.package\]/,/^$/' Cargo.toml | sed -nE 's/version *= *"([^"]*)".*/\1/p')"
+STAMP="$(date +%Y%m%d-%H%M%S)"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/autosign-macos-$STAMP-XXXX")"
+DMG_ROOT="$WORK/dmg"
+APP="$DMG_ROOT/AutoSign.app"
+
+echo "==> Building AutoSign $VERSION for $TARGET"
+cargo --config 'source.crates-io.replace-with="rsproxy"' \
+      --config 'source.rsproxy.registry="sparse+https://rsproxy.cn/index/"' \
+      build --bins --workspace --release --target "$TARGET"
+
+echo "==> Assembling the application bundle"
+mkdir -p "$DMG_ROOT"
+cp -R package/macos/Impactor.app "$APP"
+mkdir -p "$APP/Contents/MacOS"
+
+cp "target/$TARGET/release/plumeimpactor" "$APP/Contents/MacOS/AutoSign"
+cp "target/$TARGET/release/plumesign" "$APP/Contents/MacOS/plumesign"
+chmod +x "$APP/Contents/MacOS/AutoSign" "$APP/Contents/MacOS/plumesign"
+
+PLIST="$APP/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleExecutable AutoSign" "$PLIST"
+/usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName AutoSign" "$PLIST" 2>/dev/null ||
+    /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string AutoSign" "$PLIST"
+/usr/libexec/PlistBuddy -c "Set :CFBundleName AutoSign" "$PLIST"
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$PLIST"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" "$PLIST"
+
+# Anisette libraries are deliberately not bundled: the Android slice used for
+# local anisette generation crashes on macOS, so the app uses its remote
+# fallback there (the same behaviour as the upstream macOS build).
+
+echo "==> Signing (ad-hoc)"
+codesign --force --deep --sign - "$APP"
+codesign --verify --deep --strict "$APP"
+
+echo "==> Creating the DMG"
+ln -s /Applications "$DMG_ROOT/Applications"
+mkdir -p dist
+DMG="dist/AutoSign-$VERSION-macos-arm64.dmg"
+hdiutil create -volname "AutoSign" -srcfolder "$DMG_ROOT" -ov -format UDZO "$DMG"
+
+echo
+echo "==> Done: $DMG"
+ls -lh "$DMG"
+echo "Work directory kept at $WORK"
