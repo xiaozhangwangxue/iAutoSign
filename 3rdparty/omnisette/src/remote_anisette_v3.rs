@@ -612,7 +612,10 @@ impl AnisetteHeadersProvider for RemoteAnisetteProviderV3 {
                     plist::to_file_xml(config_path, state)?;
                     client.get_headers(&state).await?
                 } else {
-                    panic!()
+                    // Used to be a `panic!()`, which took the whole application
+                    // down whenever a server hiccuped. Returning the error lets
+                    // the caller try another server (or try again later).
+                    return Err(err);
                 }
             }
         };

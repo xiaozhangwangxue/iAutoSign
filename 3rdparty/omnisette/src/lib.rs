@@ -15,6 +15,10 @@ pub mod adi_proxy;
 pub mod anisette_headers_provider;
 pub mod store_services_core;
 
+/// Local anisette data through Apple's own private frameworks (macOS only).
+#[cfg(target_os = "macos")]
+pub mod aos_kit;
+
 #[cfg(feature = "remote-anisette-v3")]
 pub mod remote_anisette_v3;
 
@@ -87,12 +91,22 @@ impl AnisetteConfiguration {
         &self.anisette_url
     }
 
+    pub fn anisette_url_v3(&self) -> &String {
+        &self.anisette_url_v3
+    }
+
     pub fn configuration_path(&self) -> &PathBuf {
         &self.configuration_path
     }
 
     pub fn set_anisette_url(mut self, anisette_url: String) -> AnisetteConfiguration {
         self.anisette_url = anisette_url;
+        self
+    }
+
+    /// Chooses which v3 (SideStore protocol) anisette server to use.
+    pub fn set_anisette_url_v3(mut self, anisette_url_v3: String) -> AnisetteConfiguration {
+        self.anisette_url_v3 = anisette_url_v3;
         self
     }
 
@@ -137,6 +151,19 @@ impl AnisetteHeaders {
     pub fn get_anisette_headers_provider(
         configuration: AnisetteConfiguration,
     ) -> Result<AnisetteHeadersProviderRes, AnisetteError> {
+        // macOS can ask Apple's own frameworks for anisette data, which is both
+        // local and reliable (no external server involved).
+        #[cfg(target_os = "macos")]
+        match aos_kit::AOSKitAnisetteProvider::new() {
+            Ok(provider) => {
+                log::info!("Using Apple's AOSKit for local anisette data");
+                return Ok(AnisetteHeadersProviderRes::local(Box::new(provider)));
+            }
+            Err(err) => {
+                log::warn!("AOSKit is unavailable ({err}); continuing with other providers");
+            }
+        }
+
         // Prefer generating anisette data locally from the bundled Apple Music
         // libraries: it keeps the machine identity stable (which is what stops
         // Apple from asking for two-factor codes over and over) and does not
@@ -180,6 +207,25 @@ impl AnisetteHeaders {
         Ok(AnisetteHeadersProviderRes::local(Box::new(
             ADIProxyAnisetteProvider::new(ssc_adi_proxy, config_path.to_path_buf())?,
         )))
+    }
+
+    /// Anisette provider for a specific remote server, skipping every local
+    /// provider.
+    ///
+    /// Used for the fallback chain: the first attempt may use local sources
+    /// (AOSKit on macOS, the bundled Android libraries elsewhere), but if those
+    /// do not work there is no point retrying them for every server.
+    #[cfg(feature = "remote-anisette-v3")]
+    pub fn get_remote_anisette_headers_provider(
+        configuration: AnisetteConfiguration,
+    ) -> AnisetteHeadersProviderRes {
+        AnisetteHeadersProviderRes::remote(Box::new(
+            remote_anisette_v3::RemoteAnisetteProviderV3::new(
+                configuration.anisette_url_v3,
+                configuration.configuration_path.clone(),
+                configuration.macos_serial.clone(),
+            ),
+        ))
     }
 }
 

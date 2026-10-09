@@ -53,3 +53,7 @@ reqwest = { version = "0.13", features = ["json", "gzip", "native-tls", "system-
 [features]
 default = []
 tweaks = []
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+rustls.workspace = true
