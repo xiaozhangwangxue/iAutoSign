@@ -317,7 +317,6 @@ impl AnisetteClient {
 
         let provision_ws_url =
             format!("{}/v3/provisioning_session", self.url).replace("https://", "wss://");
-        let (mut connection, _) = connect_async(&provision_ws_url).await?;
 
         #[derive(Deserialize)]
         #[serde(tag = "result")]
@@ -332,16 +331,38 @@ impl AnisetteClient {
                 #[allow(dead_code)] // it's not even dead, rust just has problems
                 adi_pb: String,
             },
+            /// The server stopped waiting for us (or handed the session to
+            /// someone else) and expects a brand new provisioning session.
+            Timeout,
         }
 
+        // A provisioning session can time out on the server side (the public
+        // servers are shared), so reconnect and start a fresh one instead of
+        // failing the login. A short pause gives an overloaded server room to
+        // recover.
+        const MAX_ATTEMPTS: u32 = 5;
+        const RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
+        let mut attempt: u32 = 0;
+
         loop {
-            let Some(Ok(data)) = connection.next().await else {
-                continue;
-            };
-            if data.is_text() {
-                let txt = data.to_text().unwrap();
-                let msg: ProvisionInput = serde_json::from_str(txt)?;
-                match msg {
+            attempt += 1;
+            if attempt > MAX_ATTEMPTS {
+                return Err(AnisetteError::Anyhow(anyhow::anyhow!(
+                    "the anisette server kept timing out while provisioning"
+                )));
+            }
+
+            let (mut connection, _) = connect_async(&provision_ws_url).await?;
+            let mut restart = false;
+
+            loop {
+                let Some(Ok(data)) = connection.next().await else {
+                    continue;
+                };
+                if data.is_text() {
+                    let txt = data.to_text().unwrap();
+                    let msg: ProvisionInput = serde_json::from_str(txt)?;
+                    match msg {
                     ProvisionInput::GiveIdentifier => {
                         #[derive(Serialize)]
                         struct Identifier {
@@ -431,14 +452,32 @@ impl AnisetteClient {
                             ))
                             .await?;
                     }
-                    ProvisionInput::ProvisioningSuccess { adi_pb } => {
-                        debug!("ProvisioningSuccess");
-                        state.adi_pb = Some(base64_decode(&adi_pb));
-                        connection.close(None).await?;
-                        break;
+                        ProvisionInput::ProvisioningSuccess { adi_pb } => {
+                            debug!("ProvisioningSuccess");
+                            state.adi_pb = Some(base64_decode(&adi_pb));
+                            connection.close(None).await?;
+                            break;
+                        }
+                        ProvisionInput::Timeout => {
+                            log::warn!(
+                                "The anisette server timed out during provisioning; starting a fresh session ({attempt}/{MAX_ATTEMPTS})"
+                            );
+                            // `std::thread::sleep` (instead of tokio's) keeps
+                            // this working in both the async and the blocking
+                            // build of this crate.
+                            std::thread::sleep(RETRY_DELAY);
+                            restart = true;
+                            break;
+                        }
                     }
+                } else if data.is_close() {
+                    break;
                 }
-            } else if data.is_close() {
+            }
+
+            if restart {
+                continue;
+            } else {
                 break;
             }
         }
