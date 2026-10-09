@@ -115,7 +115,10 @@ fn main() -> iced::Result {
     // For notifications on macOS.
     #[cfg(target_os = "macos")]
     {
-        notify_rust::get_bundle_identifier_or_default("Impactor");
+        // Use our own bundle identifier directly. Passing an app *name* here
+        // makes macOS run an AppleScript lookup (`get id of application "..."`),
+        // which - for the old name "Impactor" - pops up the "Where is Impactor?"
+        // dialog on machines that never had that app installed.
         notify_rust::set_application("dev.khcrysalis.PlumeImpactor").ok();
     }
 
