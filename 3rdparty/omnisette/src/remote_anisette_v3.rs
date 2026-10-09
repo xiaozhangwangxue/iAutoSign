@@ -18,6 +18,24 @@ use uuid::Uuid;
 
 use crate::{AnisetteError, anisette_headers_provider::AnisetteHeadersProvider};
 
+/// Flattens a request error together with its causes, so network problems
+/// (TLS interception, DNS failures, refused connections) are visible instead of
+/// the generic "error sending request".
+fn describe_request_error(error: &reqwest::Error) -> String {
+    let mut parts = vec![error.to_string()];
+    let mut source = std::error::Error::source(error);
+
+    while let Some(inner) = source {
+        let text = inner.to_string();
+        if !parts.iter().any(|part| part == &text) {
+            parts.push(text);
+        }
+        source = inner.source();
+    }
+
+    parts.join(" -> ")
+}
+
 fn plist_to_string<T: serde::Serialize>(value: &T) -> Result<String, plist::Error> {
     plist_to_buf(value).map(|val| String::from_utf8(val).unwrap())
 }
@@ -281,15 +299,49 @@ impl AnisetteClient {
 
     pub async fn provision(&self, state: &mut AnisetteState) -> Result<(), AnisetteError> {
         debug!("Provisioning Anisette");
-        let http_client = make_reqwest()?;
-        let resp = self
-            .build_apple_request(
-                &state,
-                http_client.get("https://gsa.apple.com/grandslam/GsService2/lookup"),
-            )
-            .send()
-            .await?;
-        let text = resp.text().await?;
+
+        // Reaching Apple's authentication service is the first step of every
+        // provisioning attempt, and on locked-down networks (campus Wi-Fi,
+        // proxies, VPNs) it is also the one that fails. Retry a few times and
+        // report the underlying reason instead of a generic message.
+        const LOOKUP_ATTEMPTS: u32 = 3;
+        const LOOKUP_URL: &str = "https://gsa.apple.com/grandslam/GsService2/lookup";
+
+        let mut text = String::new();
+        let mut last_error: Option<String> = None;
+
+        for attempt in 1..=LOOKUP_ATTEMPTS {
+            let http_client = make_reqwest()?;
+
+            let attempt_result = self
+                .build_apple_request(&state, http_client.get(LOOKUP_URL))
+                .send()
+                .await;
+
+            match attempt_result {
+                Ok(resp) => match resp.text().await {
+                    Ok(body) => {
+                        text = body;
+                        last_error = None;
+                        break;
+                    }
+                    Err(err) => last_error = Some(describe_request_error(&err)),
+                },
+                Err(err) => last_error = Some(describe_request_error(&err)),
+            }
+
+            log::warn!(
+                "Could not reach Apple's authentication server ({attempt}/{LOOKUP_ATTEMPTS}): {last_error:?}"
+            );
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        }
+
+        if let Some(reason) = last_error {
+            return Err(AnisetteError::Anyhow(anyhow::anyhow!(
+                "无法连接 Apple 的认证服务器（{LOOKUP_URL}）：{reason}。\n\
+                 请检查网络或代理（校园网/加速器/VPN 可能拦截该地址），必要时换一个网络重试。",
+            )));
+        }
 
         let protocol_val = plist::Value::from_reader(Cursor::new(text.as_str()))?;
         let urls = protocol_val
@@ -318,24 +370,6 @@ impl AnisetteClient {
         let provision_ws_url =
             format!("{}/v3/provisioning_session", self.url).replace("https://", "wss://");
 
-        #[derive(Deserialize)]
-        #[serde(tag = "result")]
-        enum ProvisionInput {
-            GiveIdentifier,
-            GiveStartProvisioningData,
-            GiveEndProvisioningData {
-                #[allow(dead_code)] // it's not even dead, rust just has problems
-                cpim: String,
-            },
-            ProvisioningSuccess {
-                #[allow(dead_code)] // it's not even dead, rust just has problems
-                adi_pb: String,
-            },
-            /// The server stopped waiting for us (or handed the session to
-            /// someone else) and expects a brand new provisioning session.
-            Timeout,
-        }
-
         // A provisioning session can time out on the server side (the public
         // servers are shared), so reconnect and start a fresh one instead of
         // failing the login. A short pause gives an overloaded server room to
@@ -361,9 +395,19 @@ impl AnisetteClient {
                 };
                 if data.is_text() {
                     let txt = data.to_text().unwrap();
-                    let msg: ProvisionInput = serde_json::from_str(txt)?;
-                    match msg {
-                    ProvisionInput::GiveIdentifier => {
+
+                    // The public servers add new message types over time
+                    // ("Timeout", "EndProvisioningError", ...). Parsing the raw
+                    // JSON and matching on the "result" field means an unknown
+                    // message restarts the session instead of breaking the login.
+                    let parsed: serde_json::Value = serde_json::from_str(txt)?;
+                    let result = parsed
+                        .get("result")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or_default();
+
+                    match result {
+                    "GiveIdentifier" => {
                         #[derive(Serialize)]
                         struct Identifier {
                             identifier: String, // base64
@@ -375,7 +419,7 @@ impl AnisetteClient {
                             .send(Message::Text(serde_json::to_string(&identifier)?.into()))
                             .await?;
                     }
-                    ProvisionInput::GiveStartProvisioningData => {
+                    "GiveStartProvisioningData" => {
                         let http_client = make_reqwest()?;
                         let body_data = ProvisionBodyData {
                             header: Dictionary::new(),
@@ -413,7 +457,12 @@ impl AnisetteClient {
                             .send(Message::Text(serde_json::to_string(&spim)?.into()))
                             .await?;
                     }
-                    ProvisionInput::GiveEndProvisioningData { cpim } => {
+                    "GiveEndProvisioningData" => {
+                        let cpim = parsed
+                            .get("cpim")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or_default()
+                            .to_string();
                         let http_client = make_reqwest()?;
                         let body_data = ProvisionBodyData {
                             header: Dictionary::new(),
@@ -452,19 +501,36 @@ impl AnisetteClient {
                             ))
                             .await?;
                     }
-                        ProvisionInput::ProvisioningSuccess { adi_pb } => {
+                        "ProvisioningSuccess" => {
+                            let adi_pb = parsed
+                                .get("adi_pb")
+                                .and_then(|value| value.as_str())
+                                .unwrap_or_default()
+                                .to_string();
                             debug!("ProvisioningSuccess");
                             state.adi_pb = Some(base64_decode(&adi_pb));
                             connection.close(None).await?;
                             break;
                         }
-                        ProvisionInput::Timeout => {
+                        "Timeout" => {
                             log::warn!(
                                 "The anisette server timed out during provisioning; starting a fresh session ({attempt}/{MAX_ATTEMPTS})"
                             );
                             // `std::thread::sleep` (instead of tokio's) keeps
                             // this working in both the async and the blocking
                             // build of this crate.
+                            std::thread::sleep(RETRY_DELAY);
+                            restart = true;
+                            break;
+                        }
+                        other => {
+                            // Newer servers answer with messages this client
+                            // does not know yet (for example
+                            // `EndProvisioningError`). Log them and start over
+                            // instead of failing the login outright.
+                            log::warn!(
+                                "Unexpected anisette server response {other:?} ({attempt}/{MAX_ATTEMPTS}); starting a fresh session: {txt}"
+                            );
                             std::thread::sleep(RETRY_DELAY);
                             restart = true;
                             break;
