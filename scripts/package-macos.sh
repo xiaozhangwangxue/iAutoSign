@@ -55,7 +55,20 @@ echo "==> Creating the DMG"
 ln -s /Applications "$DMG_ROOT/Applications"
 mkdir -p dist
 DMG="dist/AutoSign-$VERSION-macos-arm64.dmg"
-hdiutil create -volname "AutoSign" -srcfolder "$DMG_ROOT" -ov -format UDZO "$DMG"
+for attempt in 1 2 3; do
+    if hdiutil create -volname "AutoSign" -srcfolder "$DMG_ROOT" -ov -format UDZO "$DMG"; then
+        break
+    fi
+
+    if [ "$attempt" -eq 3 ]; then
+        echo "hdiutil failed after $attempt attempts" >&2
+        exit 1
+    fi
+
+    echo "hdiutil reported a transient error; retrying ($attempt/3)"
+    rm -f "$DMG"
+    sleep 5
+done
 
 echo
 echo "==> Done: $DMG"

@@ -3,8 +3,12 @@ name: Publish existing AutoSign artifacts
 on:
   workflow_dispatch:
     inputs:
-      run_id:
-        description: Successful build workflow run ID
+      windows_run_id:
+        description: Successful Windows build workflow run ID
+        required: true
+        type: string
+      macos_run_id:
+        description: Successful macOS build workflow run ID
         required: true
         type: string
       tag:
@@ -21,14 +25,21 @@ jobs:
   publish:
     runs-on: ubuntu-24.04
     steps:
-      - name: Download verified build artifacts
+      - name: Download verified Windows artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: autosign-*
+          name: autosign-windows-x64
           path: release-assets
-          merge-multiple: true
           github-token: ${{ github.token }}
-          run-id: ${{ inputs.run_id }}
+          run-id: ${{ inputs.windows_run_id }}
+
+      - name: Download verified macOS artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: autosign-macos-arm64
+          path: release-assets
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.macos_run_id }}
 
       - name: Validate release files and create checksums
         working-directory: release-assets

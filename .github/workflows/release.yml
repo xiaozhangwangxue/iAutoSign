@@ -5,12 +5,23 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      platform:
+        description: Platform to build
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - macos
+          - windows
 
 permissions:
   contents: write
 
 jobs:
   windows-x64:
+    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'windows'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
@@ -36,6 +47,7 @@ jobs:
           if-no-files-found: error
 
   macos-arm64:
+    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'macos'
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v5
