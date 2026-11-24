@@ -22,6 +22,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y mingw-w64 nasm nsis
       - name: Build Windows installer
+        env:
+          CARGO_PROFILE_RELEASE_LTO: "false"
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
         run: ./scripts/build-windows.sh
       - uses: actions/upload-artifact@v4
         with:
@@ -40,6 +43,9 @@ jobs:
         with:
           targets: aarch64-apple-darwin
       - name: Build Apple Silicon DMG
+        env:
+          CARGO_PROFILE_RELEASE_LTO: "false"
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
         run: ./scripts/package-macos.sh
       - uses: actions/upload-artifact@v4
         with:
