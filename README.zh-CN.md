@@ -1,57 +1,58 @@
-# AutoSign 自动签名助手（Windows）
+# AutoSign 自动签名助手
 
-AutoSign 是一个 Windows 端的 iPhone 临时签名工具：用你自己的 Apple ID 给 IPA
-签名并直接安装到手机上，并在手机连接电脑或与电脑处于同一个 Wi-Fi 时自动续签
-（免开发者账号，使用 Apple 的免费个人团队证书）。
+AutoSign 是面向 Windows 和 Apple Silicon Mac 的 iPhone/iPad 临时签名工具。它使用你自己的 Apple ID 为 IPA 签名并安装到设备，支持 USB、同一 Wi-Fi 自动续签，以及从新版 IPA 直接更新已安装 App。
 
-本项目基于 MIT 许可的开源项目 [Impactor](https://github.com/claration/Impactor)
-（Rust，原作者 claration / khcrysalis）构建，并针对 Windows 新电脑安装体验、
-Wi-Fi 自动续签与若干已知问题做了修改。
+本项目基于 MIT 许可的 [Impactor](https://github.com/claration/Impactor) 开发，并保留上游许可与致谢。
 
-## 和 Sideloadly 相比做了什么
+## 主要功能
 
-* **安装即用（离线也算）**：安装包内置了 Apple 官方的驱动组件
-  （`AppleMobileDeviceSupport64.msi`），安装时直接本地装好——不需要联网、
-  不需要 winget、不需要微软商店，也不用先装 iTunes；Bonjour 缺失时会尽力补装。
-* **本地 anisette**：优先在本地生成 Apple 的设备身份数据（omnisette + Apple
-  Music 的 Android 库），不再依赖第三方 anisette 服务器；服务器不可用时才会回退。
-* **自动续签**：
-  * 手机通过数据线连接时会立刻检查是否需要续签；
-  * 插线时会自动为设备打开“Wi-Fi 连接”，之后手机只要和电脑在同一网络即可续签；
-  * 可在设置里选择“提前几天续签”（默认 7 天证书提前 3 天）。
-* **开机自启**：安装时可勾选，后台常驻托盘，到点自动续签。
-* **中文界面**：安装向导与应用界面均为简体中文。
+- Windows 10/11 x64 一键安装包，内置 Apple 移动设备驱动安装流程。
+- macOS Apple Silicon DMG。
+- 简体中文界面。
+- 支持添加多个 Apple ID，并按现有签名记录和账号负载自动分配。
+- 手机通过 USB 或已配对的 Wi-Fi 连接后自动续签。
+- 查看 Mac 和已连接 iPhone/iPad 上的开发签名 App，并可手动强制续签。
+- **直接更新 App**：导入与已安装 App 相同 Bundle ID 的新版 IPA 后，AutoSign 会识别原始 Bundle ID 与签名后 Team ID 的对应关系，沿用原 Apple ID，重新签名并覆盖安装；成功后同时替换续签源文件，后续续签不会退回旧版本。
 
-## 使用步骤
+## 下载
 
-1. 运行 `AutoSign-*-windows-x64-setup.exe`，一路下一步（保持“Apple 手机驱动与
-   依赖”勾选，首次安装会联网下载 Apple 官方驱动）。
-2. 打开 AutoSign → 设置 → 添加账号，输入 Apple ID 与密码，按提示输入双重认证
-   验证码（建议使用一个只用于签名的 Apple ID）。
-3. 用数据线连接 iPhone，在手机上点“信任此电脑”。
-4. 回到主界面，把要安装的 `.ipa` 拖进窗口，选择设备后点击安装。
-5. 安装完成后可以在设置里看到自动续签状态；手机插线或与电脑同一 Wi-Fi 时会
-   自动完成续签（应用需要保持运行，可在安装时勾选开机自启）。
+请从 [GitHub Releases](https://github.com/xiaozhangwangxue/iAutoSign/releases) 下载：
 
-> 免费 Apple ID 签发的证书只有 7 天有效期，这是 Apple 的限制；自动续签就是
-> 在到期前重新签名并安装一次，让应用不会失效。
+- `AutoSign-*-windows-x64-setup.exe`：Windows 安装版。
+- `AutoSign-*-windows-x64-portable.exe`：Windows 免安装版。
+- `AutoSign-*-macos-arm64.dmg`：Apple Silicon Mac 版。
+- `SHA256SUMS.txt`：发布制品校验值。
 
-## 自己编译
+## 使用
+
+1. 安装并打开 AutoSign，在设置中添加 Apple ID。
+2. 连接 iPhone/iPad，并在设备上选择“信任此电脑”。
+3. 首次安装：导入或拖入 IPA，在安装页确认后安装。
+4. 更新已有 App：保持目标设备已连接，直接导入相同 Bundle ID 的新版 IPA；AutoSign 会自动进入更新流程。
+5. 免费 Apple ID 的描述文件通常只有 7 天有效期，建议保持 AutoSign 后台运行以便自动续签。
+
+账号、证书、续签副本和日志只保存在本机用户数据目录：Windows 为 `%APPDATA%\AutoSign`，macOS 为 `~/.config/AutoSign`。请勿公开这些目录。
+
+## 自行构建
+
+Windows x64（Ubuntu/Debian 交叉编译）：
 
 ```bash
-# Ubuntu/Debian
 sudo apt-get install -y mingw-w64 nasm nsis
 rustup target add x86_64-pc-windows-gnu
-
 ./scripts/build-windows.sh
 ```
 
-产物在 `dist/`：
+macOS Apple Silicon：
 
-* `AutoSign-<版本>-windows-x64-setup.exe` —— 一键安装包（含驱动安装逻辑）
-* `AutoSign-<版本>-windows-x64-portable.exe` —— 免安装版
-* `AutoSign-<版本>-windows-x64-cli.exe` —— 命令行签名工具 `plumesign`
+```bash
+./scripts/package-macos.sh
+```
 
-## 许可
+产物生成在 `dist/`。推送 `v*` 标签时，GitHub Actions 会同时构建 Windows 与 macOS 制品并创建 Release。
 
-MIT。上游 Impactor 的版权与许可声明保留在 `LICENSE` 中。
+## 安全与许可
+
+- Apple ID 凭据用于与 Apple 的签名服务通信，不应提交到 GitHub 或发送给他人。
+- macOS DMG 使用 ad-hoc 签名，首次打开可能需要在 Finder 中右键选择“打开”。
+- AutoSign 源代码采用 MIT 许可；随安装包分发的 Apple 驱动及其他第三方组件遵循各自许可。

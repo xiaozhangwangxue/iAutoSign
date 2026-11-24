@@ -2,10 +2,11 @@ pub(crate) mod general;
 mod package;
 mod progress;
 pub(crate) mod settings;
+mod signed_apps;
 mod utilties;
 mod windows;
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use iced::Length::Fill;
 use iced::widget::{button, column, container, pick_list, row, stack, text};
@@ -39,6 +40,10 @@ pub enum Message {
     ComboBoxSelected(String),
     DeviceConnected(Device),
     DeviceDisconnected(u32),
+    DeviceSignedAppsScanned {
+        udid: String,
+        result: Result<AccountStore, String>,
+    },
 
     // Tray
     TrayMenuClicked(tray_icon::menu::MenuId),
@@ -52,6 +57,11 @@ pub enum Message {
     RefreshAppNow {
         udid: String,
         app_path: String,
+    },
+    RefreshAppCompleted {
+        udid: String,
+        app_path: String,
+        result: Result<(), String>,
     },
     ForgetApp {
         udid: String,
@@ -71,6 +81,7 @@ pub enum Message {
     // Screen-specific messages
     MainScreen(general::Message),
     UtilitiesScreen(utilties::Message),
+    SignedAppsScreen(signed_apps::Message),
     SettingsScreen(settings::Message),
     InstallerScreen(package::Message),
     ProgressScreen(progress::Message),
@@ -94,12 +105,16 @@ pub struct Impactor {
     pending_installation: bool,
     certificate_reset_queue: VecDeque<crate::certificate_reset::ConfirmationRequest>,
     selected_locale: Option<String>,
+    refreshing_apps: HashSet<String>,
+    refresh_results: HashMap<String, Result<(), String>>,
+    signed_app_scans: HashSet<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ImpactorScreenType {
     Main,
     Utilities,
+    SignedApps,
     Settings,
     Installer,
     Progress,
@@ -108,6 +123,7 @@ pub enum ImpactorScreenType {
 enum ImpactorScreen {
     Main(general::GeneralScreen),
     Utilities(utilties::UtilitiesScreen),
+    SignedApps(signed_apps::SignedAppsScreen),
     Settings(settings::SettingsScreen),
     Installer(package::PackageScreen),
     Progress(progress::ProgressScreen),
@@ -116,7 +132,8 @@ enum ImpactorScreen {
 impl Impactor {
     pub fn new() -> (Self, Task<Message>) {
         let mut tray = ImpactorTray::new();
-        let store = Self::init_account_store_sync();
+        let mut store = Self::init_account_store_sync();
+        crate::macos_signed_apps::sync_installed_apps(&mut store);
         tray.update_refresh_apps(&store);
         let selected_locale = store.locale().map(str::to_string);
         if let Some(code) = &selected_locale {
@@ -145,6 +162,9 @@ impl Impactor {
                 pending_installation: false,
                 certificate_reset_queue: VecDeque::new(),
                 selected_locale,
+                refreshing_apps: HashSet::new(),
+                refresh_results: HashMap::new(),
+                signed_app_scans: HashSet::new(),
             },
             open_task,
         )
@@ -193,9 +213,7 @@ impl Impactor {
                         ImpactorScreen::Utilities(screen) => screen.rppairing_enabled,
                         _ => false,
                     };
-                    self.current_screen = ImpactorScreen::Utilities(
-                        self.build_utilities_screen(),
-                    );
+                    self.current_screen = ImpactorScreen::Utilities(self.build_utilities_screen());
                     return Task::done(Message::UtilitiesScreen(utilties::Message::RefreshApps(
                         rppairing_enabled,
                     )));
@@ -204,7 +222,15 @@ impl Impactor {
                 Task::none()
             }
             Message::DeviceConnected(device) => {
-                if !self.devices.iter().any(|d| d.device_id == device.device_id) {
+                let mut tasks = Vec::new();
+                let known_device = self
+                    .devices
+                    .iter_mut()
+                    .find(|known| known.udid == device.udid);
+                let is_new_device = known_device.is_none();
+                if let Some(known_device) = known_device {
+                    *known_device = device.clone();
+                } else {
                     self.devices.push(device.clone());
 
                     if self.selected_device.is_none() && device.device_id != u32::MAX {
@@ -218,19 +244,50 @@ impl Impactor {
                     }
                 }
 
+                let has_refresh_record = self
+                    .account_store
+                    .as_ref()
+                    .and_then(|store| store.get_refresh_device(&device.udid))
+                    .is_some();
+                if !device.is_mac
+                    && (is_new_device || !has_refresh_record)
+                    && self.signed_app_scans.insert(device.udid.clone())
+                {
+                    if let Some(store) = self.account_store.clone() {
+                        let udid = device.udid.clone();
+                        tasks.push(Task::perform(
+                            run_signed_app_scan(store, device.clone()),
+                            move |result| Message::DeviceSignedAppsScanned { udid, result },
+                        ));
+                    }
+                }
+
                 if let ImpactorScreen::Utilities(_) = self.current_screen {
                     let rppairing_enabled = match &self.current_screen {
                         ImpactorScreen::Utilities(screen) => screen.rppairing_enabled,
                         _ => false,
                     };
-                    self.current_screen = ImpactorScreen::Utilities(
-                        self.build_utilities_screen(),
-                    );
-                    return Task::done(Message::UtilitiesScreen(utilties::Message::RefreshApps(
-                        rppairing_enabled,
+                    self.current_screen = ImpactorScreen::Utilities(self.build_utilities_screen());
+                    tasks.push(Task::done(Message::UtilitiesScreen(
+                        utilties::Message::RefreshApps(rppairing_enabled),
                     )));
                 }
 
+                Task::batch(tasks)
+            }
+            Message::DeviceSignedAppsScanned { udid, result } => {
+                self.signed_app_scans.remove(&udid);
+                match result {
+                    Ok(store) => {
+                        self.account_store = Some(store);
+                        if let (Some(store), Some(tray)) = (&self.account_store, &mut self.tray) {
+                            tray.update_refresh_apps(store);
+                        }
+                    }
+                    Err(error) => {
+                        log::warn!("Could not scan signed apps on {udid}: {error}");
+                    }
+                }
                 Task::none()
             }
             Message::DeviceDisconnected(id) => {
@@ -257,9 +314,7 @@ impl Impactor {
                         ImpactorScreen::Utilities(screen) => screen.rppairing_enabled,
                         _ => false,
                     };
-                    self.current_screen = ImpactorScreen::Utilities(
-                        self.build_utilities_screen(),
-                    );
+                    self.current_screen = ImpactorScreen::Utilities(self.build_utilities_screen());
                     return Task::done(Message::UtilitiesScreen(utilties::Message::RefreshApps(
                         rppairing_enabled,
                     )));
@@ -295,6 +350,7 @@ impl Impactor {
                 let next_screen = match self.current_screen {
                     ImpactorScreen::Main(_) => ImpactorScreenType::Installer,
                     ImpactorScreen::Utilities(_) => return Task::none(),
+                    ImpactorScreen::SignedApps(_) => return Task::none(),
                     ImpactorScreen::Installer(_) => ImpactorScreenType::Progress,
                     ImpactorScreen::Settings(_) => return Task::none(),
                     ImpactorScreen::Progress(_) => return Task::none(),
@@ -306,6 +362,10 @@ impl Impactor {
             Message::PreviousScreen => match &self.current_screen {
                 ImpactorScreen::Main(_) => Task::none(),
                 ImpactorScreen::Utilities(_) => {
+                    self.navigate_to_screen(ImpactorScreenType::Main);
+                    Task::none()
+                }
+                ImpactorScreen::SignedApps(_) => {
                     self.navigate_to_screen(ImpactorScreenType::Main);
                     Task::none()
                 }
@@ -458,20 +518,45 @@ impl Impactor {
                     if let general::Message::NavigateToInstaller(package) = msg {
                         let mut options = SignerOptions::default();
                         package.load_into_signer_options(&mut options);
+
+                        let update_device = package
+                            .get_bundle_identifier()
+                            .as_deref()
+                            .and_then(|bundle_id| self.update_device_for_source(bundle_id));
+
+                        if let Some(device) = update_device.as_ref() {
+                            log::info!(
+                                "Imported IPA matches an app on {}; starting direct update",
+                                device.name
+                            );
+                            self.selected_device = Some(device.clone());
+                            // Saving the newly signed bundle is mandatory for
+                            // updates. Otherwise a later renewal would restore
+                            // the older app copy from the refresh store.
+                            options.refresh = true;
+                        }
+
                         self.current_screen = ImpactorScreen::Installer(
                             package::PackageScreen::new(Some(package), options),
                         );
+
+                        if update_device.is_some() {
+                            return Task::done(Message::InstallerScreen(
+                                package::Message::RequestInstallation,
+                            ));
+                        }
                     } else if let general::Message::NavigateToUtilities = msg {
                         let rppairing_enabled = match &self.current_screen {
                             ImpactorScreen::Utilities(screen) => screen.rppairing_enabled,
                             _ => false,
                         };
-                        self.current_screen = ImpactorScreen::Utilities(
-                            self.build_utilities_screen(),
-                        );
+                        self.current_screen =
+                            ImpactorScreen::Utilities(self.build_utilities_screen());
                         return Task::done(Message::UtilitiesScreen(
                             utilties::Message::RefreshApps(rppairing_enabled),
                         ));
+                    } else if let general::Message::NavigateToSignedApps = msg {
+                        self.navigate_to_screen(ImpactorScreenType::SignedApps);
                     }
 
                     task
@@ -496,6 +581,12 @@ impl Impactor {
                     Task::none()
                 }
             }
+            Message::SignedAppsScreen(msg) => match msg {
+                signed_apps::Message::Back => Task::done(Message::PreviousScreen),
+                signed_apps::Message::Refresh { udid, app_path } => {
+                    Task::done(Message::RefreshAppNow { udid, app_path })
+                }
+            },
             Message::SettingsScreen(msg) => {
                 if let ImpactorScreen::Settings(ref mut screen) = self.current_screen {
                     match msg {
@@ -608,7 +699,8 @@ impl Impactor {
                             let effective = match &choice {
                                 Some(code) => code.clone(),
                                 None => {
-                                    let system = current_locale::current_locale().unwrap_or_default();
+                                    let system =
+                                        current_locale::current_locale().unwrap_or_default();
                                     plume_utils::locale::normalize_locale(
                                         &system,
                                         rust_i18n::available_locales!(),
@@ -674,10 +766,16 @@ impl Impactor {
 
                             use plume_utils::SignerMode;
                             if matches!(screen.options.mode, SignerMode::Pem) {
+                                let bundle_id = screen
+                                    .selected_package
+                                    .as_ref()
+                                    .and_then(|package| package.get_bundle_identifier());
                                 if self
                                     .account_store
                                     .as_ref()
-                                    .and_then(|s| s.selected_account())
+                                    .and_then(|store| {
+                                        store.account_for_new_app(bundle_id.as_deref())
+                                    })
                                     .is_none()
                                 {
                                     self.pending_installation = true;
@@ -712,78 +810,78 @@ impl Impactor {
                 }
             }
             Message::RefreshAppNow { udid, app_path } => {
-                if let Some(daemon_devices) = REFRESH_DAEMON_DEVICES.get() {
-                    let daemon_devices = daemon_devices.clone();
-                    let store_opt = self.account_store.clone();
-
-                    std::thread::spawn(move || {
-                        let rt = tokio::runtime::Builder::new_current_thread()
-                            .enable_all()
-                            .build()
-                            .unwrap();
-
-                        rt.block_on(async move {
-                            if let Some(store) = store_opt {
-                                if let Some(refresh_device) = store.get_refresh_device(&udid) {
-                                    if let Some(app) = refresh_device
-                                        .apps
-                                        .iter()
-                                        .find(|a| a.path.to_string_lossy() == app_path)
-                                    {
-                                        let start = std::time::Instant::now();
-                                        let timeout = std::time::Duration::from_secs(60);
-
-                                        log::info!(
-                                            "Attempting to refresh app at {:?} on device {}, waiting...",
-                                            app.path, udid
-                                        );
-
-                                        let device_opt = loop {
-                                            if start.elapsed() > timeout {
-                                                log::error!("Timeout waiting for device {}", udid);
-                                                break None;
-                                            }
-
-                                            if let Ok(devices) = daemon_devices.lock() {
-                                                if let Some(dev) = devices.get(&udid) {
-                                                    break Some(dev.clone());
-                                                }
-                                            }
-                                            tokio::time::sleep(std::time::Duration::from_secs(1))
-                                                .await;
-                                        };
-
-                                        if let Some(device) = device_opt {
-                                            let daemon = crate::refresh::RefreshDaemon::new();
-                                            if let Err(e) = daemon
-                                                .refresh_app(&store, refresh_device, app, &device)
-                                                .await
-                                            {
-                                                log::error!(
-                                                    "Failed to refresh app at {:?} on device {}: {}",
-                                                    app.path,
-                                                    udid,
-                                                    e
-                                                );
-                                                notify_rust::Notification::new()
-                                                    .summary(crate::APP_NAME)
-                                                    .body(&format!(
-                                                        "Failed to refresh {} for {}: {}",
-                                                        app.name.as_deref().unwrap_or("???"),
-                                                        &refresh_device.name,
-                                                        e
-                                                    ))
-                                                    .show()
-                                                    .ok();
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        });
-                    });
+                let key = refresh_key(&udid, &app_path);
+                if self.refreshing_apps.contains(&key) {
+                    return Task::none();
                 }
-                Task::done(Message::UpdateTrayMenu)
+
+                let Some(store) = self.account_store.clone() else {
+                    return Task::none();
+                };
+                let Some(daemon_devices) = REFRESH_DAEMON_DEVICES.get().cloned() else {
+                    return Task::none();
+                };
+
+                self.refreshing_apps.insert(key.clone());
+                self.refresh_results.remove(&key);
+
+                let completed_udid = udid.clone();
+                let completed_path = app_path.clone();
+                Task::perform(
+                    async move {
+                        let (tx, rx) = std::sync::mpsc::channel();
+                        std::thread::spawn(move || {
+                            let result = match tokio::runtime::Builder::new_current_thread()
+                                .enable_all()
+                                .build()
+                            {
+                                Ok(runtime) => runtime.block_on(run_manual_refresh(
+                                    store,
+                                    daemon_devices,
+                                    udid,
+                                    app_path,
+                                )),
+                                Err(error) => {
+                                    Err(format!("Failed to start the renewal runtime: {error}"))
+                                }
+                            };
+                            let _ = tx.send(result);
+                        });
+
+                        rx.recv().unwrap_or_else(|_| {
+                            Err("The renewal worker stopped unexpectedly".to_string())
+                        })
+                    },
+                    move |result| Message::RefreshAppCompleted {
+                        udid: completed_udid,
+                        app_path: completed_path,
+                        result,
+                    },
+                )
+            }
+            Message::RefreshAppCompleted {
+                udid,
+                app_path,
+                result,
+            } => {
+                let key = refresh_key(&udid, &app_path);
+                self.refreshing_apps.remove(&key);
+
+                if let Err(error) = &result {
+                    log::error!("Manual refresh failed for {app_path} on {udid}: {error}");
+                    notify_rust::Notification::new()
+                        .summary(crate::APP_NAME)
+                        .body(&format!("续签失败：{error}"))
+                        .show()
+                        .ok();
+                }
+                self.refresh_results.insert(key, result);
+                self.account_store = Some(Self::init_account_store_sync());
+
+                if let (Some(store), Some(tray)) = (&self.account_store, &mut self.tray) {
+                    tray.update_refresh_apps(store);
+                }
+                Task::none()
             }
             Message::ForgetApp { udid, app_path } => {
                 if let Some(store) = &mut self.account_store {
@@ -919,6 +1017,13 @@ impl Impactor {
         match &self.current_screen {
             ImpactorScreen::Main(screen) => screen.view().map(Message::MainScreen),
             ImpactorScreen::Utilities(screen) => screen.view().map(Message::UtilitiesScreen),
+            ImpactorScreen::SignedApps(screen) => screen
+                .view(
+                    &self.account_store,
+                    &self.refreshing_apps,
+                    &self.refresh_results,
+                )
+                .map(Message::SignedAppsScreen),
             ImpactorScreen::Settings(screen) => screen
                 .view(&self.account_store, &self.selected_locale)
                 .map(Message::SettingsScreen),
@@ -941,7 +1046,10 @@ impl Impactor {
             button(appearance::icon(appearance::CHEVRON_BACK))
                 .on_press(Message::PreviousScreen)
                 .style(appearance::s_button)
-        } else if matches!(self.current_screen, ImpactorScreen::Utilities(_)) {
+        } else if matches!(
+            self.current_screen,
+            ImpactorScreen::Utilities(_) | ImpactorScreen::SignedApps(_)
+        ) {
             button(appearance::icon(appearance::CHEVRON_BACK))
                 .on_press(Message::PreviousScreen)
                 .style(appearance::s_button)
@@ -1033,8 +1141,14 @@ impl Impactor {
                 self.current_screen = ImpactorScreen::Main(general::GeneralScreen::new());
             }
             ImpactorScreenType::Utilities => {
+                self.current_screen = ImpactorScreen::Utilities(self.build_utilities_screen());
+            }
+            ImpactorScreenType::SignedApps => {
+                if let Some(store) = &mut self.account_store {
+                    crate::macos_signed_apps::sync_installed_apps(store);
+                }
                 self.current_screen =
-                    ImpactorScreen::Utilities(self.build_utilities_screen());
+                    ImpactorScreen::SignedApps(signed_apps::SignedAppsScreen::new());
             }
             ImpactorScreenType::Settings => {
                 self.current_screen = ImpactorScreen::Settings(settings::SettingsScreen::new());
@@ -1054,19 +1168,16 @@ impl Impactor {
 
             let device = self.selected_device.clone();
             let options = installer.options.clone();
-            let account = self
-                .account_store
-                .as_ref()
-                .and_then(|store| {
-                    // Spread apps over all added Apple IDs automatically: each
-                    // free account may only sign three apps at a time.
-                    let bundle_id = installer
-                        .selected_package
-                        .as_ref()
-                        .and_then(|package| package.get_bundle_identifier());
+            let account = self.account_store.as_ref().and_then(|store| {
+                // Spread apps over all added Apple IDs automatically: each
+                // free account may only sign three apps at a time.
+                let bundle_id = installer
+                    .selected_package
+                    .as_ref()
+                    .and_then(|package| package.get_bundle_identifier());
 
-                    store.account_for_new_app(bundle_id.as_deref())
-                });
+                store.account_for_new_app(bundle_id.as_deref())
+            });
             let mut store = self.account_store.clone();
 
             let (tx, rx) = std::sync::mpsc::channel();
@@ -1113,4 +1224,94 @@ impl Impactor {
             Task::none()
         }
     }
+
+    fn update_device_for_source(&self, bundle_id: &str) -> Option<Device> {
+        let store = self.account_store.as_ref()?;
+
+        if let Some(selected) = &self.selected_device {
+            if store.has_refresh_app_for_source(&selected.udid, bundle_id) {
+                return Some(selected.clone());
+            }
+        }
+
+        let mut matches = self
+            .devices
+            .iter()
+            .filter(|device| store.has_refresh_app_for_source(&device.udid, bundle_id));
+        let first = matches.next()?.clone();
+
+        // When two connected devices contain the same app, do not guess which
+        // one the user intended. The normal installer remains available and
+        // shows the device selector.
+        matches.next().is_none().then_some(first)
+    }
+}
+
+pub(super) fn refresh_key(udid: &str, app_path: &str) -> String {
+    format!("{udid}\u{1f}{app_path}")
+}
+
+async fn run_signed_app_scan(store: AccountStore, device: Device) -> Result<AccountStore, String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let result = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(runtime) => runtime.block_on(crate::device_signed_apps::sync_installed_apps(
+                store, device,
+            )),
+            Err(error) => Err(format!("Failed to start the device scan runtime: {error}")),
+        };
+        let _ = tx.send(result);
+    });
+    rx.recv()
+        .unwrap_or_else(|_| Err("The device scan worker stopped unexpectedly".to_string()))
+}
+
+async fn run_manual_refresh(
+    store: AccountStore,
+    daemon_devices: crate::refresh::ConnectedDevices,
+    udid: String,
+    app_path: String,
+) -> Result<(), String> {
+    let refresh_device = store
+        .get_refresh_device(&udid)
+        .cloned()
+        .ok_or_else(|| "The signing record no longer exists".to_string())?;
+    let app = refresh_device
+        .apps
+        .iter()
+        .find(|app| app.path.to_string_lossy() == app_path)
+        .cloned()
+        .ok_or_else(|| "The app is no longer in the signing list".to_string())?;
+
+    let device = if refresh_device.is_mac {
+        // A local Mac is not a usbmuxd device. Construct it directly so manual
+        // renewal never waits for the iPhone device listener to publish it.
+        Device::local_mac(refresh_device.name.clone(), udid.clone(), u32::MAX)
+    } else {
+        let started = std::time::Instant::now();
+        let timeout = std::time::Duration::from_secs(60);
+        loop {
+            if let Ok(devices) = daemon_devices.lock() {
+                if let Some(device) = devices.get(&udid) {
+                    break device.clone();
+                }
+            }
+            if started.elapsed() >= timeout {
+                return Err("Device is not reachable over USB or Wi-Fi".to_string());
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+    };
+
+    log::info!(
+        "Manual refresh requested for {:?} on {}",
+        app.path,
+        refresh_device.name
+    );
+    crate::refresh::RefreshDaemon::new()
+        .refresh_app_manual(&store, &refresh_device, &app, &device)
+        .await
 }

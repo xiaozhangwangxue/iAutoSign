@@ -27,7 +27,15 @@ pub struct RefreshApp {
     /// signed at a time, which is the usual reason for using more than one.
     #[serde(default)]
     pub account: Option<String>,
+    /// Whether the background daemon should renew this app automatically.
+    /// Older records came from the Auto Refresh option, so they default to true.
+    #[serde(default = "default_auto_refresh")]
+    pub auto_refresh: bool,
     pub scheduled_refresh: DateTime<Utc>, // the scheduled refresh time will happen a day before expiration
+}
+
+fn default_auto_refresh() -> bool {
+    true
 }
 
 // to support autorefreshing of apps we need to store a modified copy of the app first

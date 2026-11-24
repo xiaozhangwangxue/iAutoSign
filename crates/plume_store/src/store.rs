@@ -207,18 +207,25 @@ impl AccountStore {
                 if let Some(app) = device
                     .apps
                     .iter()
-                    .find(|app| app.bundle_id.as_deref() == Some(bundle_id))
+                    .find(|app| self.refresh_app_matches_source(device, app, bundle_id))
                 {
-                    let email = app.account.clone().unwrap_or_else(|| device.account.clone());
+                    let email = app
+                        .account
+                        .clone()
+                        .unwrap_or_else(|| device.account.clone());
                     if let Some(account) = self.get_account(&email) {
-                        log::info!("{bundle_id} was signed with {email} before; reusing that account");
+                        log::info!(
+                            "{bundle_id} was signed with {email} before; reusing that account"
+                        );
                         return Some(account.clone());
                     }
                 }
             }
         }
 
-        let preferred = self.selected_account().map(|account| account.email().clone());
+        let preferred = self
+            .selected_account()
+            .map(|account| account.email().clone());
 
         let mut accounts: Vec<_> = self.accounts.values().cloned().collect();
         accounts.sort_by(|left, right| {
@@ -245,6 +252,48 @@ impl AccountStore {
         );
 
         Some(account)
+    }
+
+    /// Returns true when `source_bundle_id` is the unsigned/original identity
+    /// of an app already managed on `udid`.
+    ///
+    /// Apple ID signing appends the team ID to the IPA's original bundle ID.
+    /// Comparing only the literal IDs would therefore miss the common update
+    /// case (`com.example.app` -> `com.example.app.TEAMID`) and could select a
+    /// different Apple ID or create a second app instead of updating it.
+    pub fn has_refresh_app_for_source(&self, udid: &str, source_bundle_id: &str) -> bool {
+        self.get_refresh_device(udid).is_some_and(|device| {
+            device
+                .apps
+                .iter()
+                .any(|app| self.refresh_app_matches_source(device, app, source_bundle_id))
+        })
+    }
+
+    fn refresh_app_matches_source(
+        &self,
+        device: &RefreshDevice,
+        app: &crate::RefreshApp,
+        source_bundle_id: &str,
+    ) -> bool {
+        let Some(stored_bundle_id) = app.bundle_id.as_deref() else {
+            return false;
+        };
+
+        if stored_bundle_id == source_bundle_id {
+            return true;
+        }
+
+        let email = app.account.as_deref().unwrap_or(&device.account);
+        let Some(account) = self.get_account(email) else {
+            return false;
+        };
+        let team_id = account.team_id();
+
+        !team_id.is_empty()
+            && stored_bundle_id
+                .strip_suffix(team_id)
+                .is_some_and(|prefix| prefix == format!("{source_bundle_id}."))
     }
 
     pub fn locale(&self) -> Option<&str> {
@@ -431,6 +480,7 @@ mod tests {
                     name: Some(bundle_id.to_string()),
                     bundle_id: Some(bundle_id.to_string()),
                     account: app_account.map(str::to_string),
+                    auto_refresh: true,
                     scheduled_refresh: Utc::now(),
                 })
                 .collect(),
@@ -478,9 +528,43 @@ mod tests {
             ),
         );
 
-        let picked = store
-            .account_for_new_app(Some("com.example.old"))
-            .unwrap();
+        let picked = store.account_for_new_app(Some("com.example.old")).unwrap();
+        assert_eq!(picked.email(), "first@example.com");
+    }
+
+    #[test]
+    fn unsigned_update_matches_the_team_suffixed_installed_app() {
+        let mut store = AccountStore::default();
+        store.accounts.insert(
+            "first@example.com".to_string(),
+            test_account("first@example.com"),
+        );
+        store.accounts.insert(
+            "second@example.com".to_string(),
+            test_account("second@example.com"),
+        );
+        store.refreshes.insert(
+            "phone".to_string(),
+            RefreshDevice {
+                udid: "phone".to_string(),
+                name: "Test Phone".to_string(),
+                account: "first@example.com".to_string(),
+                is_mac: false,
+                apps: vec![crate::RefreshApp {
+                    path: PathBuf::from("/tmp/example.app"),
+                    name: Some("Example".to_string()),
+                    bundle_id: Some("com.example.app.TEAMID".to_string()),
+                    account: Some("first@example.com".to_string()),
+                    auto_refresh: false,
+                    scheduled_refresh: Utc::now(),
+                }],
+            },
+        );
+
+        assert!(store.has_refresh_app_for_source("phone", "com.example.app"));
+        assert!(!store.has_refresh_app_for_source("phone", "com.example.other"));
+
+        let picked = store.account_for_new_app(Some("com.example.app")).unwrap();
         assert_eq!(picked.email(), "first@example.com");
     }
 }

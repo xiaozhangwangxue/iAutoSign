@@ -26,6 +26,16 @@ pub const CONNECTION_LABEL: &str = "plume_info";
 pub const INSTALLATION_LABEL: &str = "plume_install";
 pub const HOUSE_ARREST_LABEL: &str = "plume_house_arrest";
 
+/// Metadata needed to show development-signed apps installed on a phone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstalledUserApp {
+    pub name: String,
+    pub bundle_id: String,
+    pub team_id: Option<String>,
+    pub profile_validated: bool,
+    pub development_signed: bool,
+}
+
 macro_rules! get_dict_string {
     ($dict:expr, $key:expr) => {
         $dict
@@ -261,6 +271,49 @@ impl Device {
         }
 
         Ok(found_apps)
+    }
+
+    /// Returns user apps together with the signing metadata exposed by iOS.
+    /// Unlike `installed_apps`, this is not limited to pairing helper apps.
+    pub async fn installed_user_apps(&self) -> Result<Vec<InstalledUserApp>, Error> {
+        let provider = self.provider(INSTALLATION_LABEL)?;
+        let mut client = InstallationProxyClient::connect(provider.as_ref()).await?;
+        let apps = client.get_apps(Some("User"), None).await?;
+
+        Ok(apps
+            .into_iter()
+            .map(|(bundle_id, info)| {
+                let dictionary = info.as_dictionary();
+                let entitlements = dictionary
+                    .and_then(|values| values.get("Entitlements"))
+                    .and_then(Value::as_dictionary);
+                let team_id = entitlements
+                    .and_then(|values| values.get("com.apple.developer.team-identifier"))
+                    .and_then(Value::as_string)
+                    .map(str::to_string);
+                let get_task_allow = entitlements
+                    .and_then(|values| values.get("get-task-allow"))
+                    .and_then(Value::as_boolean)
+                    .unwrap_or(false);
+                let signer_identity = dictionary
+                    .and_then(|values| values.get("SignerIdentity"))
+                    .and_then(Value::as_string)
+                    .unwrap_or_default();
+
+                InstalledUserApp {
+                    name: get_app_name_from_info(&info).unwrap_or_else(|| bundle_id.clone()),
+                    bundle_id,
+                    team_id,
+                    profile_validated: dictionary
+                        .and_then(|values| values.get("ProfileValidated"))
+                        .and_then(Value::as_boolean)
+                        .unwrap_or(false),
+                    development_signed: get_task_allow
+                        || signer_identity.contains("Developer")
+                        || signer_identity.contains("Development"),
+                }
+            })
+            .collect())
     }
 
     pub async fn is_app_installed(&self, bundle_id: &str) -> Result<bool, Error> {

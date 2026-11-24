@@ -274,16 +274,18 @@ impl SettingsScreen {
 
         if let Some(report) = &self.report {
             content = content.push(
-                container(scrollable(text(report.to_string()).size(appearance::THEME_FONT_SIZE)))
-                    .height(iced::Length::Fixed(180.0))
-                    .style(|theme: &iced::Theme| container::Style {
-                        border: iced::Border {
-                            width: 1.0,
-                            color: theme.palette().background.scale_alpha(0.5),
-                            radius: appearance::THEME_CORNER_RADIUS.into(),
-                        },
-                        ..Default::default()
-                    }),
+                container(scrollable(
+                    text(report.to_string()).size(appearance::THEME_FONT_SIZE),
+                ))
+                .height(iced::Length::Fixed(180.0))
+                .style(|theme: &iced::Theme| container::Style {
+                    border: iced::Border {
+                        width: 1.0,
+                        color: theme.palette().background.scale_alpha(0.5),
+                        radius: appearance::THEME_CORNER_RADIUS.into(),
+                    },
+                    ..Default::default()
+                }),
             );
         }
 

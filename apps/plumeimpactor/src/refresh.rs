@@ -147,6 +147,10 @@ impl RefreshDaemon {
 
         for (udid, refresh_device) in store.refreshes() {
             for app in &refresh_device.apps {
+                if !app.auto_refresh {
+                    continue;
+                }
+
                 if app.scheduled_refresh <= now {
                     // Renewals re-sign AutoSign's own copy of the app (kept in
                     // the data directory). If that copy is gone - someone
@@ -321,6 +325,32 @@ impl RefreshDaemon {
         app: &plume_store::RefreshApp,
         device: &Device,
     ) -> Result<(), String> {
+        self.refresh_app_inner(store, refresh_device, app, device, false)
+            .await
+    }
+
+    /// A user-triggered renewal always re-signs and reinstalls the app. Merely
+    /// pushing a provisioning profile cannot recover an app which iOS already
+    /// marks as unavailable after a certificate or profile change.
+    pub async fn refresh_app_manual(
+        &self,
+        store: &AccountStore,
+        refresh_device: &RefreshDevice,
+        app: &plume_store::RefreshApp,
+        device: &Device,
+    ) -> Result<(), String> {
+        self.refresh_app_inner(store, refresh_device, app, device, true)
+            .await
+    }
+
+    async fn refresh_app_inner(
+        &self,
+        store: &AccountStore,
+        refresh_device: &RefreshDevice,
+        app: &plume_store::RefreshApp,
+        device: &Device,
+        force_reinstall: bool,
+    ) -> Result<(), String> {
         // Try to acquire the lock for this UDID.
         {
             let mut tasks = self
@@ -410,7 +440,12 @@ impl RefreshDaemon {
             identity.new
         };
 
-        let is_installed = if let Some(bundle_id) = app.bundle_id.as_deref() {
+        // The local Mac placeholder has no usbmuxd transport, so asking it for
+        // an installed-app list always returns "Device is not connected".
+        // Mac renewals reinstall the wrapped app unconditionally anyway.
+        let is_installed = if device.is_mac {
+            true
+        } else if let Some(bundle_id) = app.bundle_id.as_deref() {
             device
                 .is_app_installed(bundle_id)
                 .await
@@ -424,7 +459,7 @@ impl RefreshDaemon {
         // - If the identity is new, we need to reinstall
         // - If the app is not installed, we need to reinstall
         // - If the app is installed and identity is not new, we can just update profiles
-        let needs_reinstall = device.is_mac || identity_is_new || !is_installed;
+        let needs_reinstall = force_reinstall || device.is_mac || identity_is_new || !is_installed;
 
         if needs_reinstall {
             self.resign_and_reinstall(app, device, &session, team_id)
@@ -439,6 +474,21 @@ impl RefreshDaemon {
 
         self.update_refresh_schedule(store, refresh_device, app)
             .await?;
+
+        if force_reinstall && !device.is_mac {
+            let bundle_id = app
+                .bundle_id
+                .as_deref()
+                .ok_or_else(|| "The app has no bundle identifier to verify".to_string())?;
+            let installed = device
+                .is_app_installed(bundle_id)
+                .await
+                .map_err(|error| format!("Failed to verify the renewed app on device: {error}"))?;
+            if !installed {
+                return Err("Installation completed, but the app is not present on the device".into());
+            }
+            log::info!("Verified renewed app {bundle_id} on {}", device.name);
+        }
 
         log::info!("Successfully refreshed app at {:?}", app.path);
 

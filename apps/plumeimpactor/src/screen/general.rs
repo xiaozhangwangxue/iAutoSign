@@ -8,7 +8,7 @@ use std::sync::OnceLock;
 
 const INSTALL_IMAGE: &[u8] = include_bytes!("./general.png");
 const INSTALL_IMAGE_HEIGHT: f32 = 130.0;
-const GITHUB_URL: &str = "https://github.com/claration/Impactor";
+const GITHUB_URL: &str = "https://github.com/xiaozhangwangxue/iAutoSign";
 const DONATE_URL: &str = "https://github.com/sponsors/claration";
 
 #[derive(Debug, Clone)]
@@ -20,6 +20,7 @@ pub enum Message {
     FileSelected(Option<std::path::PathBuf>),
     NavigateToInstaller(plume_utils::Package),
     NavigateToUtilities,
+    NavigateToSignedApps,
     OpenGitHub,
     OpenDonate,
 }
@@ -121,23 +122,30 @@ impl GeneralScreen {
 
     fn view_buttons(&self) -> Element<'_, Message> {
         container(
-            row![
-                button(appearance::icon_text(
-                    appearance::WRENCH,
-                    t!("utilities"),
-                    None
-                ))
-                .on_press(Message::NavigateToUtilities)
-                .width(Fill)
-                .style(appearance::s_button),
-                button(appearance::icon_text(
-                    appearance::DOWNLOAD,
-                    t!("import_ipa"),
-                    None
-                ))
-                .on_press(Message::OpenFileDialog)
-                .width(Fill)
-                .style(appearance::s_button)
+            column![
+                button(text(t!("signed_apps_open")).align_x(Center))
+                    .on_press(Message::NavigateToSignedApps)
+                    .width(Fill)
+                    .style(appearance::p_button),
+                row![
+                    button(appearance::icon_text(
+                        appearance::WRENCH,
+                        t!("utilities"),
+                        None
+                    ))
+                    .on_press(Message::NavigateToUtilities)
+                    .width(Fill)
+                    .style(appearance::s_button),
+                    button(appearance::icon_text(
+                        appearance::DOWNLOAD,
+                        t!("import_ipa"),
+                        None
+                    ))
+                    .on_press(Message::OpenFileDialog)
+                    .width(Fill)
+                    .style(appearance::s_button)
+                ]
+                .spacing(appearance::THEME_PADDING),
             ]
             .spacing(appearance::THEME_PADDING),
         )

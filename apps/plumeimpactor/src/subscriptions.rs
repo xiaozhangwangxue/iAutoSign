@@ -1,5 +1,6 @@
 use iced::{Subscription, window};
 use idevice::usbmuxd::{UsbmuxdConnection, UsbmuxdListenEvent};
+use rust_i18n::t;
 use std::sync::Arc;
 use std::time::Duration;
 use tray_icon::{TrayIconEvent, menu::MenuEvent};
@@ -17,6 +18,45 @@ pub(crate) fn device_listener() -> Subscription<Message> {
             |mut output: iced::futures::channel::mpsc::Sender<Message>| async move {
                 use iced::futures::{SinkExt, StreamExt};
                 let (tx, mut rx) = iced::futures::channel::mpsc::unbounded::<Message>();
+
+                // Apple's device service sometimes stops advertising a phone
+                // after it has been unplugged. Reconnect directly using the
+                // UDID and Wi-Fi address remembered during the USB pairing.
+                let network_tx = tx.clone();
+                std::thread::spawn(move || {
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .unwrap();
+                    rt.block_on(async move {
+                        loop {
+                            let directory = get_data_path().join("wifi_macs");
+                            if let Ok(entries) = std::fs::read_dir(directory) {
+                                for entry in entries.filter_map(Result::ok) {
+                                    let path = entry.path();
+                                    let Some(udid) = path
+                                        .file_stem()
+                                        .and_then(|value| value.to_str())
+                                        .map(str::to_string)
+                                    else {
+                                        continue;
+                                    };
+                                    let wifi_mac = std::fs::read_to_string(&path).ok();
+                                    if let Ok(device) = Device::connect_over_network_with_mac(
+                                        &udid,
+                                        wifi_mac.as_deref().map(str::trim),
+                                    )
+                                    .await
+                                    {
+                                        let _ = network_tx
+                                            .unbounded_send(Message::DeviceConnected(device));
+                                    }
+                                }
+                            }
+                            tokio::time::sleep(Duration::from_secs(30)).await;
+                        }
+                    });
+                });
 
                 std::thread::spawn(move || {
                     let rt = tokio::runtime::Builder::new_current_thread()
@@ -388,7 +428,25 @@ pub(crate) async fn run_installation(
         let _ = tx.send((msg, progress));
     };
 
-    send("Preparing package...".to_string(), 10);
+    let source_bundle_id = package.get_bundle_identifier();
+    let is_update = match (store.as_deref(), device, source_bundle_id.as_deref()) {
+        (Some(store), Some(device), Some(bundle_id)) => {
+            store.has_refresh_app_for_source(&device.udid, bundle_id)
+        }
+        _ => false,
+    };
+    if is_update {
+        send(
+            t!(
+                "progress_updating_application",
+                version = package.get_version().unwrap_or_else(|| "?".to_string())
+            )
+            .to_string(),
+            10,
+        );
+    } else {
+        send("Preparing package...".to_string(), 10);
+    }
 
     match options.mode {
         SignerMode::Pem => {
@@ -617,19 +675,8 @@ pub(crate) async fn run_installation(
                         .to_xml_format()
                         .parse::<chrono::DateTime<chrono::Utc>>()
                         .unwrap_or_else(|_| chrono::Utc::now() + chrono::Duration::days(4));
-                    let scheduled_refresh =
-                        scheduled_refresh - chrono::Duration::days(store.refresh_days_before() as i64);
-
-                    let refresh_app = plume_store::RefreshApp {
-                        name: package_file.get_name(),
-                        bundle_id: package_file.get_bundle_identifier(),
-                        path: dest_path.clone(),
-                        // Remember which Apple ID this app was signed with, so
-                        // renewals keep using the right one even when several
-                        // accounts are used on the same phone.
-                        account: Some(account.email().clone()),
-                        scheduled_refresh,
-                    };
+                    let scheduled_refresh = scheduled_refresh
+                        - chrono::Duration::days(store.refresh_days_before() as i64);
 
                     let mut refresh_device = store
                         .get_refresh_device(&dev.udid)
@@ -641,13 +688,30 @@ pub(crate) async fn run_installation(
                             apps: Vec::new(),
                             is_mac: dev.is_mac,
                         });
-
-                    if let Some(existing_app) = refresh_device
+                    let existing_index = refresh_device
                         .apps
-                        .iter_mut()
-                        .find(|a| a.bundle_id == refresh_app.bundle_id)
-                    {
-                        *existing_app = refresh_app;
+                        .iter()
+                        .position(|app| app.bundle_id == package_file.get_bundle_identifier());
+                    let existing_auto_refresh = existing_index
+                        .map(|index| refresh_device.apps[index].auto_refresh)
+                        .unwrap_or(true);
+                    let old_source_path =
+                        existing_index.map(|index| refresh_device.apps[index].path.clone());
+
+                    let refresh_app = plume_store::RefreshApp {
+                        name: package_file.get_name(),
+                        bundle_id: package_file.get_bundle_identifier(),
+                        path: dest_path.clone(),
+                        // Remember which Apple ID this app was signed with, so
+                        // renewals keep using the right one even when several
+                        // accounts are used on the same phone.
+                        account: Some(account.email().clone()),
+                        auto_refresh: existing_auto_refresh,
+                        scheduled_refresh,
+                    };
+
+                    if let Some(existing_index) = existing_index {
+                        refresh_device.apps[existing_index] = refresh_app;
                     } else {
                         refresh_device.apps.push(refresh_app);
                     }
@@ -655,6 +719,18 @@ pub(crate) async fn run_installation(
                     store
                         .add_or_update_refresh_device_sync(refresh_device)
                         .map_err(|e| e.to_string())?;
+
+                    if let Some(old_source_path) = old_source_path {
+                        if old_source_path != dest_path && old_source_path.starts_with(&path) {
+                            if let Err(error) = tokio::fs::remove_dir_all(&old_source_path).await {
+                                log::warn!(
+                                    "Updated app but could not remove old refresh source {:?}: {}",
+                                    old_source_path,
+                                    error
+                                );
+                            }
+                        }
+                    }
                 }
             }
         }

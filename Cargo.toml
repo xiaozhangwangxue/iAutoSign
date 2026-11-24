@@ -30,10 +30,10 @@ cpio-archive = { path = "3rdparty/apple-platform-rs/cpio-archive" }
 
 [workspace.package]
 edition = "2024"
-version = "2.7.0"
+version = "2.8.0"
 authors = ["C <claration@riseup.net>"]
 license = "MIT"
-repository = "https://github.com/claration/Impactor"
+repository = "https://github.com/xiaozhangwangxue/iAutoSign"
 
 # We use `opt-level = "s"` as it significantly reduces binary size.
 # We could then use the `#[optimize(speed)]` attribute for spot optimizations.
@@ -51,7 +51,7 @@ incremental = true          # Improves re-compile times
 [workspace.dependencies]
 tokio = { version = "1.43", features = ["rt-multi-thread"] }
 # Application
-idevice = { git = "https://github.com/jkcoxson/idevice", rev = "5171e34e3a236842af1160a84d955d037ddca3af", default-features = false, features = [
+idevice = { path = "3rdparty/idevice/idevice", default-features = false, features = [
     "full",
     "ring",
 ] }
