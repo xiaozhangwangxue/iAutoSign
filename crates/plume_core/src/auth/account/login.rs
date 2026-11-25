@@ -6,7 +6,7 @@ use srp::groups::G2048;
 
 use crate::Error;
 
-use crate::auth::account::{check_error, parse_response};
+use crate::auth::account::{check_error, post_plist_with_retry};
 use crate::auth::anisette_data::AnisetteData;
 use crate::auth::{
     Account, ChallengeRequest, ChallengeRequestBody, GSA_ENDPOINT, InitRequest, InitRequestBody,
@@ -231,15 +231,14 @@ impl Account {
         let mut buffer = Vec::new();
         plist::to_writer_xml(&mut buffer, &init_packet)?;
 
-        let res = self
-            .client
-            .post(GSA_ENDPOINT)
-            .headers(gsa_headers.clone())
-            .body(buffer)
-            .send()
-            .await;
-
-        let res = parse_response(res).await?;
+        let res = post_plist_with_retry(
+            &self.client,
+            GSA_ENDPOINT,
+            &gsa_headers,
+            &buffer,
+            "initial login",
+        )
+        .await?;
         check_error(&res)?;
 
         let salt = res.get("s").unwrap().as_data().unwrap();
@@ -279,15 +278,14 @@ impl Account {
 
         gsa_headers.insert("Connection", HeaderValue::from_static("close"));
 
-        let res = self
-            .client
-            .post(GSA_ENDPOINT)
-            .headers(gsa_headers)
-            .body(buffer)
-            .send()
-            .await;
-
-        let res = parse_response(res).await?;
+        let res = post_plist_with_retry(
+            &self.client,
+            GSA_ENDPOINT,
+            &gsa_headers,
+            &buffer,
+            "login challenge",
+        )
+        .await?;
         check_error(&res)?;
 
         let m2 = res.get("M2").unwrap().as_data().unwrap();

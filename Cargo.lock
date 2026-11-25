@@ -2415,7 +2415,7 @@ checksum = "a4ae5f15dda3c708c0ade84bfee31ccab44a3da4f88015ed22f63732abe300c8"
 
 [[package]]
 name = "decompress"
-version = "2.8.0"
+version = "2.8.1"
 dependencies = [
  "ar",
  "bzip2 0.6.1",
@@ -6074,7 +6074,7 @@ dependencies = [
 
 [[package]]
 name = "omnisette"
-version = "2.8.0"
+version = "2.8.1"
 dependencies = [
  "android-loader",
  "anyhow",
@@ -6609,7 +6609,7 @@ dependencies = [
 
 [[package]]
 name = "plume_core"
-version = "2.8.0"
+version = "2.8.1"
 dependencies = [
  "aes 0.9.0",
  "aes-gcm",
@@ -6645,11 +6645,11 @@ dependencies = [
 
 [[package]]
 name = "plume_gestalt"
-version = "2.8.0"
+version = "2.8.1"
 
 [[package]]
 name = "plume_store"
-version = "2.8.0"
+version = "2.8.1"
 dependencies = [
  "chrono",
  "log",
@@ -6661,7 +6661,7 @@ dependencies = [
 
 [[package]]
 name = "plume_utils"
-version = "2.8.0"
+version = "2.8.1"
 dependencies = [
  "apple-codesign",
  "decompress",
@@ -6683,7 +6683,7 @@ dependencies = [
 
 [[package]]
 name = "plumeimpactor"
-version = "2.8.0"
+version = "2.8.1"
 dependencies = [
  "auto-launcher",
  "chrono",
@@ -6719,7 +6719,7 @@ dependencies = [
 
 [[package]]
 name = "plumesign"
-version = "2.8.0"
+version = "2.8.1"
 dependencies = [
  "anyhow",
  "clap",

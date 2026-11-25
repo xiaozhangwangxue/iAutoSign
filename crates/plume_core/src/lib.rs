@@ -30,6 +30,14 @@ pub enum Error {
     DeveloperSessionRequestFailed,
     #[error("Authentication SRP error {0}: {1}")]
     AuthSrpWithMessage(i64, String),
+    #[error(
+        "Apple sign-in returned an unexpected response during {stage} (HTTP {http_code:?}, content type {content_type}). AutoSign retried automatically; please try again in a minute."
+    )]
+    UnexpectedAuthResponse {
+        stage: String,
+        http_code: Option<u16>,
+        content_type: String,
+    },
     #[error("Authentication extra step required: {0}")]
     ExtraStep(String),
     #[error("Bad 2FA code")]

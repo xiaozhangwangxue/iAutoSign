@@ -9,7 +9,7 @@ use reqwest::header::{HeaderMap, HeaderValue};
 use crate::Error;
 use sha2::Sha256;
 
-use crate::auth::account::{check_error, parse_response};
+use crate::auth::account::{check_error, post_plist_with_retry};
 use crate::auth::{
     Account, AppToken, AuthTokenRequest, AuthTokenRequestBody, GSA_ENDPOINT, RequestHeader,
 };
@@ -62,16 +62,14 @@ impl Account {
 
         let mut buffer = Vec::new();
         plist::to_writer_xml(&mut buffer, &packet)?;
-        let buffer = String::from_utf8(buffer).unwrap();
-
-        let res = self
-            .client
-            .post(GSA_ENDPOINT)
-            .headers(gsa_headers.clone())
-            .body(buffer)
-            .send()
-            .await;
-        let res = parse_response(res).await?;
+        let res = post_plist_with_retry(
+            &self.client,
+            GSA_ENDPOINT,
+            &gsa_headers,
+            &buffer,
+            "app token request",
+        )
+        .await?;
         let err_check = check_error(&res);
         if err_check.is_err() {
             return Err(err_check.err().unwrap());

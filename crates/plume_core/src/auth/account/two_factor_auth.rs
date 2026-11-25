@@ -1,9 +1,11 @@
 use std::str::FromStr;
+use std::time::Duration;
 
 use crate::Error;
 use base64::{Engine, engine::general_purpose};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 
+use crate::auth::account::{is_retryable_auth_error, parse_dictionary_response};
 use crate::auth::{Account, AuthenticationExtras, LoginState, PhoneNumber, VerifyBody, VerifyCode};
 
 impl Account {
@@ -85,18 +87,36 @@ impl Account {
 
     pub async fn verify_2fa(&self, code: String) -> Result<LoginState, Error> {
         let headers = self.build_2fa_headers(false);
-        let res = self
-            .client
-            .get("https://gsa.apple.com/grandslam/GsService2/validate")
-            .headers(headers.await)
-            .header(
-                HeaderName::from_str("security-code").unwrap(),
-                HeaderValue::from_str(&code).unwrap(),
-            )
-            .send()
-            .await?;
+        let headers = headers.await;
+        let security_code = HeaderValue::from_str(&code).map_err(|_| Error::Bad2faCode)?;
+        let mut parsed = None;
 
-        let res: plist::Dictionary = plist::from_bytes(res.text().await?.as_bytes())?;
+        for attempt in 1..=3 {
+            let response = self
+                .client
+                .get("https://gsa.apple.com/grandslam/GsService2/validate")
+                .headers(headers.clone())
+                .header(
+                    HeaderName::from_str("security-code").unwrap(),
+                    security_code.clone(),
+                )
+                .send()
+                .await;
+
+            match parse_dictionary_response(response, "2FA verification").await {
+                Ok(dictionary) => {
+                    parsed = Some(dictionary);
+                    break;
+                }
+                Err(error) if is_retryable_auth_error(&error) && attempt < 3 => {
+                    log::warn!("Apple 2FA response failed; retrying ({attempt}/3): {error}");
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+
+        let res = parsed.expect("the 2FA retry loop returns on its final failure");
 
         super::check_error(&res)?;
 

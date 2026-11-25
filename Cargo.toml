@@ -30,7 +30,7 @@ cpio-archive = { path = "3rdparty/apple-platform-rs/cpio-archive" }
 
 [workspace.package]
 edition = "2024"
-version = "2.8.0"
+version = "2.8.1"
 authors = ["C <claration@riseup.net>"]
 license = "MIT"
 repository = "https://github.com/xiaozhangwangxue/iAutoSign"
